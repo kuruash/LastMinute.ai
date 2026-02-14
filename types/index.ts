@@ -73,3 +73,47 @@ export interface ChatMessage {
   content: string;
   timestamp: Date;
 }
+
+/* ------------------------------------------------------------------
+   Workspace (Screen B) types
+   ------------------------------------------------------------------ */
+
+/** Topic in the left nav with progress and weak status */
+export interface WorkspaceTopic {
+  id: string;
+  name: string;
+  /** 0–1 completion */
+  progress: number;
+  weak: boolean;
+}
+
+/** Current mission card + step for the center canvas */
+export interface MissionCard {
+  id: string;
+  title: string;
+  scenarioPrompt: string;
+  /** Stepper: step index 0-based, total steps */
+  stepIndex: number;
+  stepTotal: number;
+}
+
+/** Hint level in the right panel */
+export interface HintLevel {
+  level: number;
+  text: string;
+  revealed: boolean;
+}
+
+/** Checklist item in the right panel */
+export interface ChecklistItem {
+  id: string;
+  label: string;
+  done: boolean;
+}
+
+/** Short misconception log entry */
+export interface MisconceptionLogEntry {
+  id: string;
+  text: string;
+  topicId: string;
+}

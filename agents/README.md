@@ -1,8 +1,10 @@
 # agents/
 
-Backend AI agent modules for LastMinute.ai.
+Backend AI agent modules for LastMinute.ai. Called from API routes (`app/api/`), shares types from `types/`.
 
-Each file represents one agent in the coordinated ecosystem. Agents are called from API routes (`app/api/`) and share types from `types/`.
+## Agents
+
+Each file is one agent in the coordinated ecosystem.
 
 | File              | Agent                    | Responsibility                                      |
 | ----------------- | ------------------------ | --------------------------------------------------- |
@@ -27,3 +29,5 @@ Upload → document → curriculum → story → evaluation
 4. **evaluation** scores user responses and adjusts the path
 5. **media** is called by story/tutor when visuals are needed
 6. **tutor** is invoked when the user asks for help mid-scenario
+
+Import any agent via `@/agents/<agent>`.

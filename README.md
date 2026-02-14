@@ -38,7 +38,8 @@ LastMinute.ai/
 │   │   └── upload/route.ts — POST /api/upload (file ingestion)
 │   ├── globals.css         — Tailwind base + CSS theme variables
 │   ├── layout.tsx          — Root layout (font, metadata)
-│   └── page.tsx            — Home page
+│   ├── page.tsx            — Home page (upload / start)
+│   └── workspace/page.tsx  — Main learning workspace (3-panel screen)
 │
 ├── agents/                 ← AI agent modules (backend logic)
 │   ├── document.ts         — Parse uploads, extract concepts
@@ -49,9 +50,13 @@ LastMinute.ai/
 │   └── evaluation.ts       — Score responses, adapt difficulty
 │
 ├── components/             ← React UI components
-│   └── ui/                 — Primitive/shadcn components
-│       ├── v0-ai-chat.tsx  — Main chat interface
-│       └── textarea.tsx    — Auto-resize textarea
+│   ├── ui/                 — Primitive/shadcn components
+│   │   ├── v0-ai-chat.tsx  — Main chat interface
+│   │   └── textarea.tsx    — Auto-resize textarea
+│   └── workspace/          — Learning workspace (Screen B)
+│       ├── topic-nav.tsx   — Left: topics, progress, weak tags
+│       ├── mission-canvas.tsx — Center: mission card, widget, answer
+│       └── support-panel.tsx  — Right: checklist, tutor, hints, log
 │
 ├── lib/                    ← Shared utilities
 │   └── utils.ts            — cn() class merging helper
@@ -71,6 +76,7 @@ LastMinute.ai/
 | You want to…                        | Look in               |
 | ----------------------------------- | ---------------------- |
 | Change a page or add a new route    | `app/`                 |
+| Edit the 3-panel learning workspace | `app/workspace/`, `components/workspace/` |
 | Add or edit an API endpoint         | `app/api/`             |
 | Work on AI agent logic              | `agents/`              |
 | Build or modify UI components       | `components/`          |

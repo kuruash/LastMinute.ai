@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode, KeyboardEvent } from "react";
 import { Textarea } from "@/components/ui/textarea";
@@ -9,7 +10,6 @@ import {
   BookOpen,
   Brain,
   FileUp,
-  GraduationCap,
   Paperclip,
   PlusIcon,
   Sparkles,
@@ -83,23 +83,20 @@ export function VercelV0Chat() {
   };
 
   return (
-    <div className="flex w-full max-w-3xl flex-col items-center gap-8 px-4 py-12">
+    <div className="flex w-full max-w-2xl flex-col items-center gap-10 px-4 py-16">
       {/* Heading */}
-      <div className="flex flex-col items-center gap-3 text-center">
-        <div className="flex items-center gap-2">
-          <GraduationCap className="h-8 w-8 text-foreground" />
-          <h1 className="text-4xl font-bold tracking-tight text-foreground">
-            LastMinute
-          </h1>
-        </div>
-        <p className="max-w-md text-base text-muted-foreground">
-          Upload your materials, choose your intensity, and start learning.
+      <div className="flex flex-col items-center gap-2 text-center">
+        <h1 className="text-3xl font-semibold tracking-tight text-foreground">
+          LastMinute
+        </h1>
+        <p className="max-w-sm text-sm text-muted-foreground">
+          Upload your materials, choose your intensity, start learning.
         </p>
       </div>
 
-      {/* Chat input area */}
+      {/* Chat input */}
       <div className="w-full">
-        <div className="relative rounded-2xl border border-border bg-card shadow-sm transition-shadow focus-within:shadow-md">
+        <div className="rounded-xl border border-border bg-background transition-shadow focus-within:border-foreground/20">
           <div className="overflow-y-auto">
             <Textarea
               ref={textareaRef}
@@ -109,7 +106,7 @@ export function VercelV0Chat() {
                 adjustHeight();
               }}
               onKeyDown={handleKeyDown}
-              placeholder="What are you studying? Describe your exam or paste a topic..."
+              placeholder="What are you studying?"
               className={cn(
                 "w-full px-4 py-3",
                 "resize-none",
@@ -125,24 +122,19 @@ export function VercelV0Chat() {
             />
           </div>
 
-          {/* Bottom toolbar */}
           <div className="flex items-center justify-between px-3 pb-3">
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                className="group flex items-center gap-1.5 rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <Paperclip className="h-4 w-4" />
-                <span className="hidden text-xs group-hover:inline">
-                  Attach
-                </span>
-              </button>
-            </div>
+            <button
+              type="button"
+              className="group flex items-center gap-1.5 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <Paperclip className="h-4 w-4" />
+              <span className="hidden text-xs group-hover:inline">Attach</span>
+            </button>
 
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                className="flex items-center gap-1.5 rounded-lg border border-dashed border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-accent hover:text-foreground"
+                className="flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
               >
                 <PlusIcon className="h-3.5 w-3.5" />
                 Course
@@ -151,9 +143,9 @@ export function VercelV0Chat() {
               <button
                 type="button"
                 className={cn(
-                  "flex items-center justify-center rounded-lg p-2 transition-all",
+                  "flex items-center justify-center rounded-md p-1.5 transition-all",
                   value.trim()
-                    ? "bg-foreground text-background shadow-sm hover:bg-foreground/90"
+                    ? "bg-foreground text-background"
                     : "text-muted-foreground"
                 )}
               >
@@ -164,24 +156,12 @@ export function VercelV0Chat() {
           </div>
         </div>
 
-        {/* Quick-action chips */}
+        {/* Action chips */}
         <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-          <ActionButton
-            icon={<FileUp className="h-4 w-4" />}
-            label="Upload Syllabus"
-          />
-          <ActionButton
-            icon={<BookOpen className="h-4 w-4" />}
-            label="Study Materials"
-          />
-          <ActionButton
-            icon={<Brain className="h-4 w-4" />}
-            label="Practice Quiz"
-          />
-          <ActionButton
-            icon={<Sparkles className="h-4 w-4" />}
-            label="Start a Mission"
-          />
+          <ActionButton icon={<FileUp className="h-3.5 w-3.5" />} label="Upload Syllabus" />
+          <ActionButton icon={<BookOpen className="h-3.5 w-3.5" />} label="Study Materials" />
+          <ActionButton icon={<Brain className="h-3.5 w-3.5" />} label="Practice Quiz" />
+          <ActionButton icon={<Sparkles className="h-3.5 w-3.5" />} label="Start a Mission" href="/workspace" />
         </div>
       </div>
     </div>
@@ -189,22 +169,32 @@ export function VercelV0Chat() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Action button chip                                                */
+/*  Action chip                                                       */
 /* ------------------------------------------------------------------ */
 
 interface ActionButtonProps {
   icon: ReactNode;
   label: string;
+  href?: string;
 }
 
-function ActionButton({ icon, label }: ActionButtonProps) {
+function ActionButton({ icon, label, href }: ActionButtonProps) {
+  const cls =
+    "flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground";
+
+  if (href) {
+    return (
+      <Link href={href} className={cls}>
+        {icon}
+        {label}
+      </Link>
+    );
+  }
+
   return (
-    <button
-      type="button"
-      className="flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground"
-    >
+    <button type="button" className={cls}>
       {icon}
-      <span className="text-xs font-medium">{label}</span>
+      {label}
     </button>
   );
 }

@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { TopicNav } from "@/components/workspace/topic-nav";
-import { MissionCanvas } from "@/components/workspace/mission-canvas";
+import { MissionCanvas, type FlowBlock } from "@/components/workspace/mission-canvas";
 import { SupportPanel } from "@/components/workspace/support-panel";
-import { parseMissionContent, type MissionStep } from "@/lib/parse-story";
+import { buildInitialBlocks } from "@/lib/parse-story";
 import { Loader2 } from "lucide-react";
 import type {
   ChecklistItem,
@@ -16,216 +17,131 @@ import type {
 
 type LoadState = "loading" | "ready" | "error";
 
-interface WorkspaceUploadSnapshot {
-  interactive_story: {
-    title: string;
-    opening: string;
-    checkpoint: string;
-    boss_level: string;
-  };
-  final_storytelling: string;
-  concepts: string[];
-  checklist: string[];
-}
-
-interface WorkspaceViewModel {
-  missionTitle: string;
-  concepts: string[];
-  steps: MissionStep[];
-  checklist: ChecklistItem[];
-  hints: HintLevel[];
-  tutorContext: string;
-  fullNarrative: string;
-  topics: WorkspaceTopic[];
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-function asStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string");
-}
-
-function normalizeUploadSnapshot(value: unknown): WorkspaceUploadSnapshot | null {
-  const root = asRecord(value);
-  if (!root) return null;
-
-  const interactive = asRecord(root.interactive_story) ?? {};
-  return {
-    interactive_story: {
-      title: asString(interactive.title),
-      opening: asString(interactive.opening),
-      checkpoint: asString(interactive.checkpoint),
-      boss_level: asString(interactive.boss_level),
-    },
-    final_storytelling: asString(root.final_storytelling),
-    concepts: asStringArray(root.concepts),
-    checklist: asStringArray(root.checklist),
-  };
-}
-
-function buildViewModel(upload: WorkspaceUploadSnapshot): WorkspaceViewModel {
-  const parsed = parseMissionContent({
-    title: upload.interactive_story.title,
-    interactiveStory: upload.interactive_story,
-    finalStorytelling: upload.final_storytelling,
-  });
-
-  const concepts = upload.concepts;
-  const checklist: ChecklistItem[] = upload.checklist.map((label, index) => ({
-    id: `cl-${index}`,
-    label,
-    done: false,
-  }));
-  const topics: WorkspaceTopic[] = concepts.map((name, index) => ({
-    id: `t-${index}`,
-    name,
-    progress: 0,
-    weak: false,
-  }));
-
-  const hints: HintLevel[] = parsed.fullNarrative
-    .split("\n\n")
-    .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => paragraph.length > 20)
-    .slice(0, 6)
-    .map((text, index) => ({
-      level: index + 1,
-      text,
-      revealed: false,
-    }));
-
-  const tutorContext = [
-    parsed.title,
-    concepts.length > 0 ? `Concepts: ${concepts.join(", ")}` : "",
-    parsed.fullNarrative,
-    ...parsed.steps.map((step) => step.narrative),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-
-  return {
-    missionTitle: parsed.title,
-    concepts,
-    steps: parsed.steps,
-    checklist,
-    hints,
-    tutorContext,
-    fullNarrative: parsed.fullNarrative,
-    topics,
-  };
-}
-
 export default function WorkspacePage() {
+  const searchParams = useSearchParams();
+  const sessionId = searchParams.get("session");
+
   const [loadState, setLoadState] = useState<LoadState>("loading");
+  const [errorMsg, setErrorMsg] = useState("");
 
   /* ---- data ---- */
-  const [topics, setTopics] = useState<WorkspaceTopic[]>([]);
   const [missionTitle, setMissionTitle] = useState("");
   const [concepts, setConcepts] = useState<string[]>([]);
-  const [steps, setSteps] = useState<MissionStep[]>([]);
+  const [topics, setTopics] = useState<WorkspaceTopic[]>([]);
+  const [initialBlocks, setInitialBlocks] = useState<FlowBlock[]>([]);
+  const [phase, setPhase] = useState("briefing");
   const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
   const [hints, setHints] = useState<HintLevel[]>([]);
   const [misconceptions] = useState<MisconceptionLogEntry[]>([]);
   const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
   const [tutorContext, setTutorContext] = useState("");
-  const [fullNarrative, setFullNarrative] = useState("");
+  const [interactionCount, setInteractionCount] = useState(0);
 
-  /* ---- load from sessionStorage ---- */
+  /* ---- load session from API ---- */
   useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem("lastminute_upload");
-      if (!raw) {
-        setLoadState("error");
-        return;
-      }
-
-      const uploads = JSON.parse(raw) as unknown;
-      if (!Array.isArray(uploads) || uploads.length === 0) {
-        setLoadState("error");
-        return;
-      }
-
-      const upload = normalizeUploadSnapshot(uploads[0]);
-      if (!upload) {
-        setLoadState("error");
-        return;
-      }
-
-      const model = buildViewModel(upload);
-      setTopics(model.topics);
-      setSelectedTopicId(model.topics[0]?.id ?? null);
-      setConcepts(model.concepts);
-      setMissionTitle(model.missionTitle);
-      setSteps(model.steps);
-      setChecklist(model.checklist);
-      setHints(model.hints);
-      setTutorContext(model.tutorContext);
-      setFullNarrative(model.fullNarrative);
-
-      setLoadState("ready");
-    } catch {
+    if (!sessionId) {
+      setErrorMsg("No session ID. Upload your materials first.");
       setLoadState("error");
+      return;
     }
-  }, []);
 
-  /* ---- step completion ---- */
-  const handleStepComplete = useCallback(
-    (stepId: string, choice: string | null, answer: string | null) => {
-      setSteps((prevSteps) => {
-        const nextSteps = prevSteps.map((step) =>
-          step.id === stepId
-            ? {
-                ...step,
-                completed: true,
-                userChoice: choice,
-                userAnswer: answer,
-              }
-            : step
+    let cancelled = false;
+
+    async function loadSession() {
+      try {
+        const res = await fetch(`/api/session?id=${sessionId}`);
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.error ?? "Failed to load session");
+        }
+
+        const session = await res.json();
+        if (cancelled) return;
+
+        // Title
+        setMissionTitle(
+          session.interactive_story?.title || "Your Mission"
         );
 
-        const completedCount = nextSteps.filter((step) => step.completed).length;
-        const totalSteps = Math.max(nextSteps.length, 1);
-        const nextProgress = Math.min(1, completedCount / totalSteps);
+        // Concepts & topics
+        const sessionConcepts: string[] = session.concepts ?? [];
+        setConcepts(sessionConcepts);
+        const newTopics: WorkspaceTopic[] = sessionConcepts.map(
+          (c: string, i: number) => ({
+            id: `t-${i}`,
+            name: c,
+            progress: 0,
+            weak: false,
+          })
+        );
+        setTopics(newTopics);
+        setSelectedTopicId(newTopics[0]?.id ?? null);
 
-        setTopics((previousTopics) => {
-          if (previousTopics.length === 0) return previousTopics;
-          const focusTopicId = selectedTopicId ?? previousTopics[0].id;
-          return previousTopics.map((topic) =>
-            topic.id === focusTopicId
-              ? { ...topic, progress: nextProgress }
-              : topic
+        // Initial flow blocks from the story
+        const story = session.interactive_story ?? {
+          title: "",
+          opening: "",
+          checkpoint: "",
+          boss_level: "",
+        };
+        setInitialBlocks(buildInitialBlocks(story));
+
+        // Checklist
+        const sessionChecklist: string[] = session.checklist ?? [];
+        setChecklist(
+          sessionChecklist.map((label: string, i: number) => ({
+            id: `cl-${i}`,
+            label,
+            done: false,
+          }))
+        );
+
+        // Hints from storytelling
+        const storytelling: string = session.final_storytelling ?? "";
+        if (storytelling) {
+          const paragraphs = storytelling
+            .split("\n\n")
+            .map((p: string) => p.trim())
+            .filter((p: string) => p.length > 20)
+            .slice(0, 5);
+          setHints(
+            paragraphs.map((text: string, i: number) => ({
+              level: i + 1,
+              text,
+              revealed: false,
+            }))
           );
-        });
+        }
 
-        return nextSteps;
-      });
-    },
-    [selectedTopicId]
-  );
+        // Tutor context
+        setTutorContext(
+          [
+            story.title,
+            `Concepts: ${sessionConcepts.join(", ")}`,
+            storytelling,
+            session.source_text?.slice(0, 4000),
+          ]
+            .filter(Boolean)
+            .join("\n\n")
+        );
 
-  /* ---- mission reset ---- */
-  const handleReset = useCallback(() => {
-    setSteps((prev) =>
-      prev.map((s) => ({
-        ...s,
-        completed: false,
-        userChoice: null,
-        userAnswer: null,
-      }))
-    );
-    setTopics((prev) => prev.map((topic) => ({ ...topic, progress: 0 })));
-  }, []);
+        setLoadState("ready");
+      } catch (err) {
+        if (cancelled) return;
+        setErrorMsg(
+          err instanceof Error ? err.message : "Failed to load session"
+        );
+        setLoadState("error");
+      }
+    }
 
-  /* ---- checklist ---- */
+    loadSession();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  /* ---- handlers ---- */
   const handleChecklistToggle = useCallback((id: string) => {
     setChecklist((prev) =>
       prev.map((item) =>
@@ -234,18 +150,38 @@ export default function WorkspacePage() {
     );
   }, []);
 
-  /* ---- hints ---- */
   const handleRevealHint = useCallback((level: number) => {
     setHints((prev) =>
       prev.map((h) => (h.level === level ? { ...h, revealed: true } : h))
     );
   }, []);
 
+  const handlePhaseChange = useCallback(
+    (newPhase: string) => {
+      setPhase(newPhase);
+      // Update topic progress
+      const phaseProgress: Record<string, number> = {
+        briefing: 0,
+        checkpoint: 0.33,
+        boss: 0.66,
+        complete: 1,
+      };
+      const progress = phaseProgress[newPhase] ?? 0;
+      setTopics((prev) =>
+        prev.map((t, i) => (i === 0 ? { ...t, progress } : t))
+      );
+    },
+    []
+  );
+
   /* ---- loading ---- */
   if (loadState === "loading") {
     return (
       <main className="flex h-screen items-center justify-center bg-background">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          <p className="text-xs text-muted-foreground">Loading mission...</p>
+        </div>
       </main>
     );
   }
@@ -257,9 +193,7 @@ export default function WorkspacePage() {
         <h1 className="font-mono text-lg font-bold tracking-tighter text-foreground">
           lastminute<span className="text-muted-foreground">.ai</span>
         </h1>
-        <p className="text-sm text-muted-foreground">
-          No study materials found. Upload something first.
-        </p>
+        <p className="text-sm text-muted-foreground">{errorMsg}</p>
         <Link
           href="/"
           className="rounded-md border border-foreground px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-foreground hover:text-background"
@@ -271,7 +205,7 @@ export default function WorkspacePage() {
   }
 
   /* ---- workspace ---- */
-  const completedSteps = steps.filter((s) => s.completed).length;
+  const completedPhases = ["checkpoint", "boss", "complete"].indexOf(phase);
 
   return (
     <main className="flex h-screen flex-col bg-background">
@@ -294,12 +228,13 @@ export default function WorkspacePage() {
           onSelect={setSelectedTopicId}
         />
         <MissionCanvas
+          sessionId={sessionId!}
           title={missionTitle}
           concepts={concepts}
-          steps={steps}
-          fullNarrative={fullNarrative}
-          onStepComplete={handleStepComplete}
-          onReset={handleReset}
+          initialBlocks={initialBlocks}
+          phase={phase}
+          onPhaseChange={handlePhaseChange}
+          onInteraction={() => setInteractionCount((c) => c + 1)}
         />
         <SupportPanel
           checklist={checklist}
@@ -308,8 +243,8 @@ export default function WorkspacePage() {
           onRevealHint={handleRevealHint}
           misconceptions={misconceptions}
           tutorContext={tutorContext}
-          completedSteps={completedSteps}
-          totalSteps={steps.length}
+          completedSteps={Math.max(0, completedPhases)}
+          totalSteps={3}
         />
       </div>
     </main>

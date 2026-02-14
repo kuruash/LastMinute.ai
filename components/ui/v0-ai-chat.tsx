@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, ReactNode, KeyboardEvent } from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import type { UploadResult } from "@/types";
+// Session created via /api/session, no client types needed
 import {
   ArrowUpIcon,
   BookOpen,
@@ -129,27 +129,42 @@ export function VercelV0Chat() {
         return;
       }
 
-      // Store full API responses in sessionStorage
-      const uploadResults: UploadResult[] = results
-        .filter((r) => r.ok)
-        .map((r) => ({
-          filename: r.data.filename ?? r.file.name,
-          chars: r.data.chars ?? 0,
-          concepts: r.data.concepts ?? [],
-          checklist: r.data.checklist ?? [],
-          interactive_story: r.data.interactive_story ?? {
-            title: "",
-            opening: "",
-            checkpoint: "",
-            boss_level: "",
-          },
-          final_storytelling: r.data.final_storytelling ?? "",
-          llm_used: Boolean(r.data.llm_used),
-          llm_status: r.data.llm_status ?? "",
-        }));
+      const missingStorytelling = results.find(
+        (r) =>
+          !r.data?.llm_used ||
+          typeof r.data?.final_storytelling !== "string" ||
+          r.data.final_storytelling.trim().length < 80
+      );
+      if (missingStorytelling) {
+        setUploadError(
+          "Gemini storytelling is not ready yet for this upload. Verify `GEMINI_API_KEY` and try again."
+        );
+        setIsUploading(false);
+        return;
+      }
 
-      sessionStorage.setItem("lastminute_upload", JSON.stringify(uploadResults));
-      router.push("/workspace");
+      // Create a server-side session from the first successful upload
+      const first = results.find((r) => r.ok);
+      if (!first) {
+        setUploadError("Upload failed. Try again.");
+        setIsUploading(false);
+        return;
+      }
+
+      const sessionRes = await fetch("/api/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(first.data),
+      });
+      const sessionData = await sessionRes.json();
+
+      if (!sessionData.sessionId) {
+        setUploadError("Failed to create session. Try again.");
+        setIsUploading(false);
+        return;
+      }
+
+      router.push(`/workspace?session=${sessionData.sessionId}`);
     } catch {
       setUploadError("Upload failed. Check your connection.");
       setIsUploading(false);

@@ -31,7 +31,7 @@ export function SupportPanel({
 
   const doneCount = checklist.filter((c) => c.done).length;
   const progressPercent =
-    checklist.length > 0 ? Math.round((doneCount / checklist.length) * 100) : 0;
+    totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
 
   return (
     <div className="flex h-full flex-col border-l border-border">
@@ -52,11 +52,9 @@ export function SupportPanel({
         <section>
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>
-              Mission {completedSteps}/{totalSteps}
+              Topics {completedSteps}/{totalSteps}
             </span>
-            <span>
-              Tasks {doneCount}/{checklist.length}
-            </span>
+            <span>{progressPercent}%</span>
           </div>
           <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-border">
             <div
@@ -66,10 +64,10 @@ export function SupportPanel({
           </div>
         </section>
 
-        {/* Checklist */}
+        {/* Checklist — derived from topics */}
         <section>
           <h3 className="mb-2 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
-            To do
+            Topics checklist
           </h3>
           <ul className="space-y-0.5">
             {checklist.map((item) => (

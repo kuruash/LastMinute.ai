@@ -88,6 +88,43 @@ export interface MisconceptionLogEntry {
 }
 
 /* ------------------------------------------------------------------
+   Lesson types — structured per-topic content
+   ------------------------------------------------------------------ */
+
+export type LessonSectionType =
+  | "explanation"
+  | "keyTerms"
+  | "example"
+  | "diagram"
+  | "practice";
+
+export interface LessonSection {
+  id: string;
+  type: LessonSectionType;
+  title: string;
+  content: string;
+  /** For practice sections */
+  questionType?: "open" | "mcq";
+  options?: string[];
+  hint?: string;
+  /** For diagram sections */
+  diagramAlt?: string;
+  /** Interaction state (mutated client-side + by evaluate-answer API) */
+  userAnswer?: string;
+  aiFeedback?: string;
+  answered: boolean;
+}
+
+export type TopicLessonStatus = "locked" | "active" | "completed";
+
+export interface TopicLesson {
+  topicId: string;
+  topicName: string;
+  status: TopicLessonStatus;
+  sections: LessonSection[];
+}
+
+/* ------------------------------------------------------------------
    Upload result – exact shape the API returns, stored in sessionStorage
    ------------------------------------------------------------------ */
 

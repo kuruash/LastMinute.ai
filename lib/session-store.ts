@@ -1,13 +1,12 @@
 /**
  * In-memory session store.
  *
- * Stores upload results keyed by session ID so the workspace page
- * can fetch data via API instead of relying on sessionStorage.
- *
+ * Stores upload results + generated lessons keyed by session ID.
  * Good enough for dev / single-server. Swap for Redis / DB later.
  */
 
 import { randomUUID } from "crypto";
+import type { TopicLesson, LessonSection } from "@/types";
 
 export interface SessionData {
   id: string;
@@ -24,24 +23,18 @@ export interface SessionData {
   final_storytelling: string;
   llm_used: boolean;
   llm_status: string;
-  /** Full extracted source text — used as context for tutor + interact APIs */
+  /** Full extracted source text — context for tutor + lesson generation */
   source_text: string;
-  /** Interaction history for this session */
-  interactions: InteractionEntry[];
-}
-
-export interface InteractionEntry {
-  id: string;
-  role: "system" | "user" | "assistant";
-  content: string;
-  timestamp: number;
-  /** Which phase the user was in when this was generated */
-  phase: "briefing" | "checkpoint" | "boss" | "complete" | "freeform";
+  /** Generated per-topic lessons */
+  lessons: TopicLesson[];
 }
 
 // Use globalThis to survive Next.js hot-reloads in dev
 const globalKey = "__lastminute_sessions__";
-const globalObj = globalThis as unknown as Record<string, Map<string, SessionData>>;
+const globalObj = globalThis as unknown as Record<
+  string,
+  Map<string, SessionData>
+>;
 
 if (!globalObj[globalKey]) {
   globalObj[globalKey] = new Map<string, SessionData>();
@@ -61,13 +54,15 @@ function cleanup() {
   }
 }
 
-export function createSession(data: Omit<SessionData, "id" | "createdAt" | "interactions">): SessionData {
+export function createSession(
+  data: Omit<SessionData, "id" | "createdAt" | "lessons">
+): SessionData {
   cleanup();
   const session: SessionData = {
     ...data,
     id: randomUUID(),
     createdAt: Date.now(),
-    interactions: [],
+    lessons: [],
   };
   store.set(session.id, session);
   return session;
@@ -78,14 +73,48 @@ export function getSession(id: string): SessionData | null {
   return store.get(id) ?? null;
 }
 
-export function addInteraction(sessionId: string, entry: Omit<InteractionEntry, "id" | "timestamp">): InteractionEntry | null {
+export function setLessons(sessionId: string, lessons: TopicLesson[]): boolean {
+  const session = store.get(sessionId);
+  if (!session) return false;
+  session.lessons = lessons;
+  return true;
+}
+
+export function updateSection(
+  sessionId: string,
+  topicId: string,
+  sectionId: string,
+  update: Partial<Pick<LessonSection, "userAnswer" | "aiFeedback" | "answered">>
+): LessonSection | null {
   const session = store.get(sessionId);
   if (!session) return null;
-  const interaction: InteractionEntry = {
-    ...entry,
-    id: randomUUID(),
-    timestamp: Date.now(),
-  };
-  session.interactions.push(interaction);
-  return interaction;
+
+  const topic = session.lessons.find((l) => l.topicId === topicId);
+  if (!topic) return null;
+
+  const section = topic.sections.find((s) => s.id === sectionId);
+  if (!section) return null;
+
+  Object.assign(section, update);
+  return section;
+}
+
+export function completeTopicAndAdvance(
+  sessionId: string,
+  topicId: string
+): boolean {
+  const session = store.get(sessionId);
+  if (!session) return false;
+
+  const idx = session.lessons.findIndex((l) => l.topicId === topicId);
+  if (idx === -1) return false;
+
+  session.lessons[idx].status = "completed";
+
+  // Unlock the next topic
+  if (idx + 1 < session.lessons.length) {
+    session.lessons[idx + 1].status = "active";
+  }
+
+  return true;
 }

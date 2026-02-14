@@ -1,10 +1,19 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import type { WorkspaceTopic } from "@/types";
+import { Lock, CheckCircle2 } from "lucide-react";
+import type { TopicLessonStatus } from "@/types";
+
+interface TopicNavItem {
+  id: string;
+  name: string;
+  progress: number;
+  weak: boolean;
+  status?: TopicLessonStatus;
+}
 
 interface TopicNavProps {
-  topics: WorkspaceTopic[];
+  topics: TopicNavItem[];
   selectedId: string | null;
   onSelect: (id: string) => void;
 }
@@ -19,45 +28,56 @@ export function TopicNav({ topics, selectedId, onSelect }: TopicNavProps) {
       </div>
       <nav className="flex-1 overflow-y-auto py-2">
         <ul className="space-y-px px-2">
-          {topics.map((topic) => (
-            <li key={topic.id}>
-              <button
-                type="button"
-                onClick={() => onSelect(topic.id)}
-                className={cn(
-                  "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors",
-                  selectedId === topic.id
-                    ? "bg-foreground text-background"
-                    : "text-foreground hover:bg-muted"
-                )}
-              >
-                {/* Progress dot */}
-                <span
+          {topics.map((topic) => {
+            const isLocked = topic.status === "locked";
+            const isCompleted = topic.status === "completed";
+            const isActive = topic.status === "active";
+            const isSelected = selectedId === topic.id;
+
+            return (
+              <li key={topic.id}>
+                <button
+                  type="button"
+                  onClick={() => !isLocked && onSelect(topic.id)}
+                  disabled={isLocked}
                   className={cn(
-                    "h-1.5 w-1.5 shrink-0 rounded-full",
-                    topic.progress >= 1
-                      ? "bg-foreground"
-                      : selectedId === topic.id
-                        ? "bg-background/50"
-                        : "bg-muted-foreground/40"
+                    "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors",
+                    isLocked
+                      ? "cursor-not-allowed text-muted-foreground/40"
+                      : isSelected
+                        ? "bg-foreground text-background"
+                        : "text-foreground hover:bg-muted"
                   )}
-                />
-                <span className="min-w-0 flex-1 truncate">{topic.name}</span>
-                {topic.weak && (
-                  <span
-                    className={cn(
-                      "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
-                      selectedId === topic.id
-                        ? "bg-background/20 text-background"
-                        : "bg-foreground/10 text-foreground"
-                    )}
-                  >
-                    Weak
-                  </span>
-                )}
-              </button>
-            </li>
-          ))}
+                >
+                  {/* Status icon */}
+                  {isCompleted ? (
+                    <CheckCircle2
+                      className={cn(
+                        "h-3.5 w-3.5 shrink-0",
+                        isSelected ? "text-background" : "text-foreground"
+                      )}
+                    />
+                  ) : isLocked ? (
+                    <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40" />
+                  ) : (
+                    <span
+                      className={cn(
+                        "h-2 w-2 shrink-0 rounded-full",
+                        isActive
+                          ? isSelected
+                            ? "bg-background"
+                            : "bg-foreground"
+                          : isSelected
+                            ? "bg-background/50"
+                            : "bg-muted-foreground/40"
+                      )}
+                    />
+                  )}
+                  <span className="min-w-0 flex-1 truncate">{topic.name}</span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       </nav>
     </div>

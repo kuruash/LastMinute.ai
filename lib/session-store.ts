@@ -6,7 +6,7 @@
  */
 
 import { randomUUID } from "crypto";
-import type { TopicLesson, LessonSection } from "@/types";
+import type { TopicLesson, LessonSection, TopicStorylineCard } from "@/types";
 
 export interface SessionData {
   id: string;
@@ -19,6 +19,7 @@ export interface SessionData {
     opening: string;
     checkpoint: string;
     boss_level: string;
+    topic_storylines?: TopicStorylineCard[];
   };
   final_storytelling: string;
   llm_used: boolean;

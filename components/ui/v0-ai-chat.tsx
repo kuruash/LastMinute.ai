@@ -19,6 +19,37 @@ import {
   X,
 } from "lucide-react";
 
+const RECENT_SESSIONS_KEY = "lastminute_recent_sessions";
+
+function saveRecentSession(entry: { id: string; title: string }) {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem(RECENT_SESSIONS_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    const list = Array.isArray(parsed)
+      ? parsed
+          .filter(
+            (item): item is Record<string, unknown> =>
+              !!item && typeof item === "object"
+          )
+          .map((item) => ({
+            id: String(item.id ?? "").trim(),
+            title: String(item.title ?? "").trim(),
+            updatedAt: Number(item.updatedAt ?? 0),
+          }))
+          .filter((item) => !!item.id && !!item.title && Number.isFinite(item.updatedAt))
+      : [];
+
+    const next = [
+      { id: entry.id, title: entry.title, updatedAt: Date.now() },
+      ...list.filter((item) => item.id !== entry.id),
+    ].slice(0, 100);
+    window.localStorage.setItem(RECENT_SESSIONS_KEY, JSON.stringify(next));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Auto-resize textarea hook                                         */
 /* ------------------------------------------------------------------ */
@@ -164,6 +195,13 @@ export function VercelV0Chat() {
         return;
       }
 
+      saveRecentSession({
+        id: String(sessionData.sessionId),
+        title:
+          String(first.data?.interactive_story?.title ?? "").trim() ||
+          String(first.data?.filename ?? "").trim() ||
+          "Untitled chat",
+      });
       router.push(`/workspace?session=${sessionData.sessionId}`);
     } catch {
       setUploadError("Upload failed. Check your connection.");

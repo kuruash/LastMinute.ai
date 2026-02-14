@@ -1,12 +1,99 @@
 import { NextResponse } from "next/server";
 import { getSession, setLessons } from "@/lib/session-store";
 import type { TopicLesson, LessonSection } from "@/types";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
+import { promises as fs } from "fs";
+import path from "path";
 
 export const runtime = "nodejs";
 
 interface GenerateLessonsBody {
   sessionId: string;
+}
+
+const GEMINI_LESSON_CACHE_DIR = path.join(
+  process.cwd(),
+  ".cache",
+  "gemini_lessons"
+);
+const GEMINI_LESSON_CACHE_TTL_SECONDS = Number.parseInt(
+  process.env.LASTMINUTE_GEMINI_CACHE_TTL_SECONDS ?? "604800",
+  10
+);
+
+function cacheTtlSeconds() {
+  if (Number.isFinite(GEMINI_LESSON_CACHE_TTL_SECONDS)) {
+    return Math.max(0, GEMINI_LESSON_CACHE_TTL_SECONDS);
+  }
+  return 604800;
+}
+
+function lessonCacheKey(input: {
+  model: string;
+  topicName: string;
+  prompt: string;
+}): string {
+  const hash = createHash("sha256");
+  hash.update(
+    JSON.stringify({
+      provider: "gemini",
+      scope: "generate-lessons",
+      model: input.model,
+      topicName: input.topicName,
+      prompt: input.prompt,
+    })
+  );
+  return hash.digest("hex");
+}
+
+async function readGeminiLessonCache(
+  key: string
+): Promise<{ rawText: string } | null> {
+  const ttl = cacheTtlSeconds();
+  const cachePath = path.join(GEMINI_LESSON_CACHE_DIR, `${key}.json`);
+
+  try {
+    const raw = await fs.readFile(cachePath, "utf-8");
+    const parsed = JSON.parse(raw) as {
+      cachedAt?: number;
+      rawText?: unknown;
+    };
+
+    const cachedAt = Number(parsed.cachedAt ?? 0);
+    if (ttl > 0 && Date.now() - cachedAt * 1000 > ttl * 1000) {
+      return null;
+    }
+
+    if (typeof parsed.rawText !== "string") {
+      return null;
+    }
+
+    return { rawText: parsed.rawText };
+  } catch {
+    return null;
+  }
+}
+
+async function writeGeminiLessonCache(key: string, rawText: string) {
+  if (cacheTtlSeconds() === 0 || !rawText.trim()) return;
+
+  const cachePath = path.join(GEMINI_LESSON_CACHE_DIR, `${key}.json`);
+  const tmpPath = `${cachePath}.tmp-${randomUUID()}`;
+
+  try {
+    await fs.mkdir(GEMINI_LESSON_CACHE_DIR, { recursive: true });
+    await fs.writeFile(
+      tmpPath,
+      JSON.stringify({
+        cachedAt: Math.floor(Date.now() / 1000),
+        rawText,
+      }),
+      "utf-8"
+    );
+    await fs.rename(tmpPath, cachePath);
+  } catch {
+    await fs.unlink(tmpPath).catch(() => undefined);
+  }
 }
 
 /**
@@ -79,8 +166,17 @@ export async function POST(request: Request) {
       sourceTextSnippet,
       session.interactive_story?.title || "Study Session"
     );
+    const cacheKey = lessonCacheKey({ model, topicName, prompt });
 
     try {
+      const cached = await readGeminiLessonCache(cacheKey);
+      if (cached) {
+        const parsed = parseGeminiLessonResponse(cached.rawText, topicId, topicName);
+        parsed.status = i === 0 ? "active" : "locked";
+        lessons.push(parsed);
+        continue;
+      }
+
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -112,6 +208,7 @@ export async function POST(request: Request) {
       const data = await res.json();
       const rawText =
         data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+      await writeGeminiLessonCache(cacheKey, rawText);
 
       const parsed = parseGeminiLessonResponse(rawText, topicId, topicName);
       parsed.status = i === 0 ? "active" : "locked";

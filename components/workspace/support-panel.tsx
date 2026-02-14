@@ -29,18 +29,11 @@ export function SupportPanel({
 }: SupportPanelProps) {
   const [tutorOpen, setTutorOpen] = useState(false);
 
-  const doneCount = checklist.filter((c) => c.done).length;
   const progressPercent =
     totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
 
   return (
     <div className="flex h-full flex-col border-l border-border">
-      <div className="border-b border-border px-4 py-3">
-        <h2 className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
-          Support
-        </h2>
-      </div>
-
       {/* Scrollable top section */}
       <div
         className={cn(
@@ -64,10 +57,10 @@ export function SupportPanel({
           </div>
         </section>
 
-        {/* Checklist — derived from topics */}
+        {/* Checklist generated from pipeline */}
         <section>
           <h3 className="mb-2 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
-            Topics checklist
+            Subtopics checklist
           </h3>
           <ul className="space-y-0.5">
             {checklist.map((item) => (
@@ -117,48 +110,6 @@ export function SupportPanel({
             {tutorOpen ? "Close tutor" : "Ask tutor"}
           </button>
         </section>
-
-        {/* Hints (only show when tutor closed) */}
-        {!tutorOpen && hints.length > 0 && (
-          <section>
-            <h3 className="mb-2 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
-              Hints
-            </h3>
-            <div className="space-y-1.5">
-              {hints.map((h) => (
-                <div
-                  key={h.level}
-                  className={cn(
-                    "rounded-md border px-3 py-2",
-                    h.revealed
-                      ? "border-border"
-                      : "border-dashed border-border"
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() => !h.revealed && onRevealHint(h.level)}
-                    className="flex w-full items-center justify-between text-left"
-                  >
-                    <span className="text-xs text-foreground">
-                      Hint {h.level}
-                    </span>
-                    {!h.revealed && (
-                      <span className="text-[10px] text-muted-foreground underline">
-                        reveal
-                      </span>
-                    )}
-                  </button>
-                  {h.revealed && (
-                    <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                      {h.text}
-                    </p>
-                  )}
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
 
         {/* Misconceptions (only show when tutor closed) */}
         {!tutorOpen && misconceptions.length > 0 && (

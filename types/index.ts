@@ -133,6 +133,16 @@ export interface InteractiveStory {
   opening: string;
   checkpoint: string;
   boss_level: string;
+  topic_storylines?: TopicStorylineCard[];
+}
+
+export interface TopicStorylineCard {
+  title: string;
+  topics: string[];
+  importance: "high" | "medium" | "low" | string;
+  subtopics: string[];
+  story: string;
+  friend_explainers?: string[];
 }
 
 export interface UploadResult {

@@ -21,6 +21,28 @@ export async function POST(request: Request) {
       opening: body.interactive_story?.opening ?? "",
       checkpoint: body.interactive_story?.checkpoint ?? "",
       boss_level: body.interactive_story?.boss_level ?? "",
+      topic_storylines: Array.isArray(body.interactive_story?.topic_storylines)
+        ? body.interactive_story.topic_storylines
+            .filter(
+              (item: unknown) => !!item && typeof item === "object"
+            )
+            .map((item: Record<string, unknown>) => ({
+              title: String(item.title ?? "").trim(),
+              topics: Array.isArray(item.topics)
+                ? item.topics.map((t) => String(t).trim()).filter(Boolean)
+                : [],
+              importance: String(item.importance ?? "medium").trim().toLowerCase(),
+              subtopics: Array.isArray(item.subtopics)
+                ? item.subtopics.map((s) => String(s).trim()).filter(Boolean)
+                : [],
+              story: String(item.story ?? "").trim(),
+              friend_explainers: Array.isArray(item.friend_explainers)
+                ? item.friend_explainers
+                    .map((s) => String(s).trim())
+                    .filter(Boolean)
+                : [],
+            }))
+        : [],
     },
     final_storytelling: body.final_storytelling ?? "",
     llm_used: Boolean(body.llm_used),

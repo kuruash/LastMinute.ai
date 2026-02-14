@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
@@ -20,6 +20,74 @@ interface LoaderResult {
   llmUsed: boolean;
   llmStatus: string;
   pipelineTrace: Array<Record<string, unknown>>;
+}
+
+const UPLOAD_CACHE_DIR = path.join(process.cwd(), ".cache", "upload_results");
+const UPLOAD_CACHE_VERSION = "v2";
+const UPLOAD_CACHE_TTL_SECONDS = Number.parseInt(
+  process.env.LASTMINUTE_UPLOAD_CACHE_TTL_SECONDS ?? "2592000",
+  10
+);
+
+function uploadCacheTtlSeconds() {
+  if (Number.isFinite(UPLOAD_CACHE_TTL_SECONDS)) {
+    return Math.max(0, UPLOAD_CACHE_TTL_SECONDS);
+  }
+  return 2592000;
+}
+
+function uploadCacheKey(buffer: Buffer): string {
+  const hash = createHash("sha256");
+  hash.update(UPLOAD_CACHE_VERSION);
+  hash.update(buffer);
+  return hash.digest("hex");
+}
+
+async function readUploadCache(key: string): Promise<LoaderResult | null> {
+  const ttl = uploadCacheTtlSeconds();
+  const cachePath = path.join(UPLOAD_CACHE_DIR, `${key}.json`);
+
+  try {
+    const raw = await fs.readFile(cachePath, "utf-8");
+    const parsed = JSON.parse(raw) as {
+      cachedAt?: number;
+      value?: LoaderResult;
+    };
+
+    const cachedAt = Number(parsed.cachedAt ?? 0);
+    if (ttl > 0 && Date.now() - cachedAt * 1000 > ttl * 1000) {
+      return null;
+    }
+
+    if (!parsed.value || typeof parsed.value !== "object") {
+      return null;
+    }
+    return parsed.value;
+  } catch {
+    return null;
+  }
+}
+
+async function writeUploadCache(key: string, value: LoaderResult) {
+  if (uploadCacheTtlSeconds() === 0) return;
+
+  const cachePath = path.join(UPLOAD_CACHE_DIR, `${key}.json`);
+  const tmpPath = `${cachePath}.tmp-${randomUUID()}`;
+
+  try {
+    await fs.mkdir(UPLOAD_CACHE_DIR, { recursive: true });
+    await fs.writeFile(
+      tmpPath,
+      JSON.stringify({
+        cachedAt: Math.floor(Date.now() / 1000),
+        value,
+      }),
+      "utf-8"
+    );
+    await fs.rename(tmpPath, cachePath);
+  } catch {
+    await fs.unlink(tmpPath).catch(() => undefined);
+  }
 }
 
 function parseLastJsonLine(stdout: string): Record<string, unknown> {
@@ -209,6 +277,28 @@ export async function POST(request: Request) {
   }
 
   const buffer = Buffer.from(await file.arrayBuffer());
+  const cacheKey = uploadCacheKey(buffer);
+  const cached = await readUploadCache(cacheKey);
+  if (cached) {
+    return NextResponse.json({
+      filename: file.name,
+      size: file.size,
+      chars: cached.chars,
+      preview: cached.preview,
+      text: cached.text,
+      learning_event: cached.learningEvent,
+      concepts: cached.concepts,
+      checklist: cached.checklist,
+      interactive_story: cached.interactiveStory,
+      final_storytelling: cached.finalStorytelling,
+      llm_used: cached.llmUsed,
+      llm_status: cached.llmStatus,
+      pipeline_trace: cached.pipelineTrace,
+      status: "processed",
+      cached: true,
+    });
+  }
+
   const safeName = path.basename(file.name) || "upload";
   const tempPath = path.join(os.tmpdir(), `${randomUUID()}-${safeName}`);
 
@@ -216,6 +306,7 @@ export async function POST(request: Request) {
 
   try {
     const result = await loadWithPython(tempPath);
+    await writeUploadCache(cacheKey, result);
     return NextResponse.json({
       filename: file.name,
       size: file.size,
@@ -231,6 +322,7 @@ export async function POST(request: Request) {
       llm_status: result.llmStatus,
       pipeline_trace: result.pipelineTrace,
       status: "processed",
+      cached: false,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Upload failed";

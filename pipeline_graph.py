@@ -1,6 +1,9 @@
 import json
 import os
 import re
+import hashlib
+import time
+import math
 from collections import Counter
 from typing import Any, TypedDict
 
@@ -91,6 +94,81 @@ def _llm_model() -> str:
     )
 
 
+def _cache_dir() -> str:
+    return os.path.join(os.getcwd(), ".cache", "gemini_json")
+
+
+def _cache_ttl_seconds() -> int:
+    raw = (
+        os.getenv("LASTMINUTE_GEMINI_CACHE_TTL_SECONDS", "").strip()
+        or _read_env_file_value("LASTMINUTE_GEMINI_CACHE_TTL_SECONDS")
+    )
+    if not raw:
+        return 60 * 60 * 24 * 7
+    try:
+        parsed = int(raw)
+        return max(parsed, 0)
+    except Exception:
+        return 60 * 60 * 24 * 7
+
+
+def _cache_key(system_prompt: str, user_prompt: str) -> str:
+    payload = json.dumps(
+        {
+            "provider": "gemini",
+            "model": _llm_model(),
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _cache_get_json(cache_key: str) -> dict[str, Any] | None:
+    ttl = _cache_ttl_seconds()
+    path = os.path.join(_cache_dir(), f"{cache_key}.json")
+    if not os.path.exists(path):
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            payload = json.load(file)
+        cached_at = float(payload.get("cached_at", 0))
+        if ttl > 0 and time.time() - cached_at > ttl:
+            return None
+        data = payload.get("data", {})
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _cache_set_json(cache_key: str, data: dict[str, Any]) -> None:
+    if _cache_ttl_seconds() == 0:
+        return
+
+    directory = _cache_dir()
+    path = os.path.join(directory, f"{cache_key}.json")
+    tmp_path = f"{path}.tmp-{os.getpid()}"
+    payload = {
+        "cached_at": time.time(),
+        "data": data,
+    }
+
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with open(tmp_path, "w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+
 def _parse_json(text: str) -> dict[str, Any]:
     text = text.strip()
     if not text:
@@ -110,6 +188,11 @@ def _parse_json(text: str) -> dict[str, Any]:
 
 @traceable(run_type="llm", name="gemini_json_call")
 def _llm_json(system_prompt: str, user_prompt: str) -> tuple[dict[str, Any], str]:
+    key = _cache_key(system_prompt, user_prompt)
+    cached = _cache_get_json(key)
+    if cached is not None:
+        return cached, "ok"
+
     client, status = _llm_client()
     if client is None:
         return {}, status
@@ -125,7 +208,10 @@ def _llm_json(system_prompt: str, user_prompt: str) -> tuple[dict[str, Any], str
             generation_config={"temperature": 0.2},
         )
         content = response.text or "{}"
-        return _parse_json(content), "ok"
+        parsed = _parse_json(content)
+        if parsed:
+            _cache_set_json(key, parsed)
+        return parsed, "ok"
     except Exception as error:
         return {}, f"gemini request failed: {error}"
 
@@ -271,7 +357,14 @@ def normalize_concepts(state: PipelineState) -> PipelineState:
 
 @traceable(run_type="chain", name="estimate_priority")
 def estimate_priority(state: PipelineState) -> PipelineState:
-    priority = state.get("normalized_concepts", [])[:5]
+    normalized = state.get("normalized_concepts", [])
+    if not normalized:
+        return {**state, "priority_concepts": []}
+
+    # Keep broad concept coverage while preserving ranking order from concept extraction.
+    # Target: at least 85% of detected concepts, capped to 10 topics.
+    coverage_target = max(1, min(10, int(math.ceil(len(normalized) * 0.85))))
+    priority = normalized[:coverage_target]
     return {**state, "priority_concepts": priority}
 
 
@@ -286,84 +379,490 @@ def select_scenario_seed(state: PipelineState) -> PipelineState:
     return {**state, "scenario_seed": seed}
 
 
+def _coverage_target(total: int, ratio: float = 0.85) -> int:
+    if total <= 0:
+        return 0
+    return max(1, min(total, int(math.ceil(total * ratio))))
+
+
+def _importance_for_rank(index: int, total: int) -> str:
+    if total <= 1:
+        return "high"
+    rank = (index + 1) / float(total)
+    if rank <= 0.3:
+        return "high"
+    if rank <= 0.7:
+        return "medium"
+    return "low"
+
+
+def _normalized_subtopic_checklist(
+    focus: str, concepts: list, secondary: list, llm_items: list[str], max_items: int = 30
+) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+
+    for raw_item in llm_items:
+        item = re.sub(r"^\s*[-*\d\).\]]+\s*", "", str(raw_item)).strip()
+        if len(item) < 4:
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(item)
+
+    if len(cleaned) >= 4:
+        return cleaned[:max_items]
+
+    fallback: list[str] = []
+    concept_pool = [str(concept).strip() for concept in concepts if str(concept).strip()]
+    if not concept_pool:
+        concept_pool = [str(focus).strip() or "core topic"]
+
+    for concept in concept_pool:
+        fallback.append(
+            f"{concept}: explain it clearly, then solve one exam-style question."
+        )
+    fallback.append(f"{focus}: write a 5-line summary from memory.")
+    if secondary:
+        fallback.append(f"{focus} + {secondary[0]}: connect them in one worked example.")
+
+    for item in fallback:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(item)
+
+    return cleaned[:max_items]
+
+
+def _match_topic_to_concept(raw_topic: str, concepts: list[str], used: set[str]) -> str:
+    candidate = str(raw_topic).strip().lower()
+    if not candidate:
+        return ""
+
+    for concept in concepts:
+        c = str(concept).strip()
+        c_key = c.lower()
+        if c_key == candidate and c_key not in used:
+            return c
+
+    for concept in concepts:
+        c = str(concept).strip()
+        c_key = c.lower()
+        if c_key in used:
+            continue
+        if candidate in c_key or c_key in candidate:
+            return c
+
+    return ""
+
+
+def _word_count(text: str) -> int:
+    return len(re.findall(r"\S+", text))
+
+
+def _ensure_min_words(text: str, min_words: int, topic_label: str) -> str:
+    if min_words <= 0:
+        return text.strip()
+    result = text.strip()
+    while _word_count(result) < min_words:
+        result += (
+            "\n\n"
+            f"You pause at your desk, look at the clock, and commit to one more round on {topic_label}. "
+            "You say the idea out loud, catch a weak sentence, and rebuild it into a sharp exam-ready explanation. "
+            "You test yourself with one concrete example, then restate the same idea in simpler words so you can recall it under pressure."
+        )
+    return result.strip()
+
+
+def _pair_topics(concepts: list[str]) -> list[list[str]]:
+    pairs: list[list[str]] = []
+    idx = 0
+    while idx < len(concepts):
+        pair = [concepts[idx]]
+        if idx + 1 < len(concepts):
+            pair.append(concepts[idx + 1])
+        pairs.append(pair)
+        idx += 2
+    return pairs
+
+
+def _story_min_words(importance: str) -> int:
+    if importance == "high":
+        return 620
+    if importance == "medium":
+        return 520
+    return 450
+
+
+def _fallback_story_card(topics: list[str], importance: str) -> dict[str, Any]:
+    clean_topics = [str(t).strip() for t in topics if str(t).strip()]
+    if not clean_topics:
+        clean_topics = ["core concept"]
+    if importance not in {"high", "medium", "low"}:
+        importance = "medium"
+
+    topic_label = " + ".join(clean_topics)
+    first = clean_topics[0]
+    second = clean_topics[1] if len(clean_topics) > 1 else clean_topics[0]
+    title = f"{first} and {second}: last-minute exam sync"
+
+    base_story = (
+        f"You are one night away from the exam, and {first} plus {second} are waiting on your final revision map. "
+        "You open your notes, draw a line between the two topics, and decide this is your mission for the next focused block: "
+        "understand each idea, connect them in action, and speak the logic clearly enough to survive time pressure.\n\n"
+        f"You begin with {first}. You don't just memorize a definition; you build a scene around it. In your head, you walk through a question step by step, "
+        f"using {first} as the key move that unlocks the next line of reasoning. You catch yourself writing something vague, stop, and rewrite it as if the "
+        "examiner is reading every word. The more precise your sentence gets, the more confident you feel.\n\n"
+        f"Then you pivot to {second}. You imagine the question changing slightly and ask yourself what stays the same and what must change. "
+        f"Now the story gets stronger: {first} sets the direction, and {second} decides how to execute it correctly. You test this link with a short worked path, "
+        "and every step has a reason. If one reason sounds weak, you fix it immediately.\n\n"
+        "You run a pressure moment: ninety seconds, no notes, one clean explanation. Your first attempt is rough, but you tighten it. "
+        "Second attempt: better structure. Third attempt: direct, clear, exam-ready. You can now see the topic pair as one connected strategy, not two isolated definitions.\n\n"
+        "Before closing the session, you summarize everything in your own words: what each topic means, how they interact, and what mistake you will avoid tomorrow. "
+        "You read that summary once, close the page, and say it again from memory. This time, it sticks."
+    )
+    story = _ensure_min_words(base_story, _story_min_words(importance), topic_label)
+
+    subtopics = [f"{first} core idea", f"{second} core idea", f"{first} <-> {second} exam linkage"]
+    friend_explainers = [
+        f"How would you explain {first} to a friend in 30 seconds with one example?",
+        f"If a question mixes {first} and {second}, what clue tells you which idea to apply first?",
+        "What is the most common mistake here, and how will you avoid it in the exam?",
+    ]
+    return {
+        "title": title,
+        "topics": clean_topics[:2],
+        "importance": importance,
+        "subtopics": subtopics,
+        "story": story,
+        "friend_explainers": friend_explainers,
+    }
+
+
+def _normalize_story_cards(
+    llm_cards: Any, concepts: list[str], pairs: list[list[str]]
+) -> list[dict[str, Any]]:
+    if not isinstance(llm_cards, list):
+        llm_cards = []
+
+    concept_list = [str(c).strip() for c in concepts if str(c).strip()]
+    pair_lookup = {
+        tuple(sorted([topic.lower() for topic in pair])): pair for pair in pairs
+    }
+    used_pairs: set[tuple[str, ...]] = set()
+    normalized_cards: list[dict[str, Any]] = []
+
+    for idx, raw in enumerate(llm_cards):
+        if not isinstance(raw, dict):
+            continue
+
+        raw_topics = raw.get("topics", [])
+        if isinstance(raw_topics, str):
+            raw_topics = [raw_topics]
+        if not isinstance(raw_topics, list):
+            continue
+
+        mapped_topics: list[str] = []
+        used_local: set[str] = set()
+        for candidate in raw_topics:
+            match = _match_topic_to_concept(str(candidate), concept_list, used_local)
+            if match:
+                used_local.add(match.lower())
+                mapped_topics.append(match)
+
+        mapped_topics = mapped_topics[:2]
+        if not mapped_topics:
+            continue
+
+        pair_key = tuple(sorted([topic.lower() for topic in mapped_topics]))
+        if pair_key not in pair_lookup or pair_key in used_pairs:
+            continue
+        used_pairs.add(pair_key)
+
+        pair = pair_lookup[pair_key]
+        importance = str(raw.get("importance", "")).strip().lower()
+        if importance not in {"high", "medium", "low"}:
+            importance = _importance_for_rank(idx, max(len(pairs), 1))
+
+        fallback = _fallback_story_card(pair, importance)
+
+        title = str(raw.get("title", "")).strip() or str(fallback.get("title", "")).strip()
+        raw_subtopics = raw.get("subtopics", [])
+        subtopics = (
+            [str(s).strip() for s in raw_subtopics if str(s).strip()]
+            if isinstance(raw_subtopics, list)
+            else []
+        )
+        if not subtopics:
+            subtopics = fallback.get("subtopics", [])
+
+        story = str(raw.get("story", "")).strip() or str(fallback.get("story", "")).strip()
+        story = _ensure_min_words(story, _story_min_words(importance), " + ".join(pair))
+
+        raw_friend = raw.get("friend_explainers", [])
+        friend_explainers = (
+            [str(item).strip() for item in raw_friend if str(item).strip()]
+            if isinstance(raw_friend, list)
+            else []
+        )
+        if not friend_explainers:
+            friend_explainers = fallback.get("friend_explainers", [])
+
+        normalized_cards.append(
+            {
+                "title": title,
+                "topics": pair,
+                "importance": importance,
+                "subtopics": subtopics,
+                "story": story,
+                "friend_explainers": friend_explainers,
+            }
+        )
+
+    cards_by_key = {
+        tuple(sorted([str(topic).lower() for topic in card.get("topics", [])])): card
+        for card in normalized_cards
+    }
+    complete_cards: list[dict[str, Any]] = []
+    for idx, pair in enumerate(pairs):
+        key = tuple(sorted([topic.lower() for topic in pair]))
+        if key in cards_by_key:
+            card = cards_by_key[key]
+            if card.get("importance") not in {"high", "medium", "low"}:
+                card["importance"] = _importance_for_rank(idx, max(len(pairs), 1))
+            complete_cards.append(card)
+        else:
+            complete_cards.append(
+                _fallback_story_card(pair, _importance_for_rank(idx, max(len(pairs), 1)))
+            )
+
+    return complete_cards
+
+
+def _story_cards_to_checklist(story_cards: list[dict[str, Any]]) -> list[str]:
+    items: list[str] = []
+    for card in story_cards:
+        topics = card.get("topics", [])
+        if isinstance(topics, list):
+            clean_topics = [str(topic).strip() for topic in topics if str(topic).strip()]
+        else:
+            clean_topics = []
+        if not clean_topics:
+            continue
+        topic_label = " + ".join(clean_topics)
+        subtopics = card.get("subtopics", [])
+        if isinstance(subtopics, list):
+            for sub in subtopics[:2]:
+                sub_text = str(sub).strip()
+                if sub_text:
+                    items.append(f"{topic_label}: revise {sub_text} with one worked example.")
+        items.append(f"{topic_label}: explain the pair out loud in exam-ready language.")
+    return items
+
+
+def _compose_story_text(
+    title: str,
+    opening: str,
+    checkpoint: str,
+    boss_level: str,
+    story_cards: list[dict[str, Any]],
+    checklist: list[str],
+) -> str:
+    blocks: list[str] = []
+    for idx, card in enumerate(story_cards):
+        topics = card.get("topics", [])
+        if not isinstance(topics, list):
+            topics = []
+        topic_label = " + ".join(str(topic).strip() for topic in topics if str(topic).strip()) or "core concepts"
+        importance = str(card.get("importance", "medium")).strip().lower()
+        importance_label = {
+            "high": "High Priority",
+            "medium": "Medium Priority",
+            "low": "Low Priority",
+        }.get(importance, "Priority")
+        card_title = str(card.get("title", "")).strip() or f"{topic_label} story card"
+
+        subtopics = card.get("subtopics", [])
+        if not isinstance(subtopics, list):
+            subtopics = []
+        subtopic_text = "\n".join(f"- {str(sub).strip()}" for sub in subtopics if str(sub).strip()) or "- quick review"
+
+        friend = card.get("friend_explainers", [])
+        if not isinstance(friend, list):
+            friend = []
+        friend_text = "\n".join(f"- {str(item).strip()}" for item in friend if str(item).strip()) or "- explain this topic pair to a friend."
+
+        story = str(card.get("story", "")).strip()
+        block = (
+            f"Story Card {idx + 1}: {card_title}\n"
+            f"Topics: {topic_label} ({importance_label})\n"
+            f"Subtopics:\n{subtopic_text}\n\n"
+            f"Story:\n{story}\n\n"
+            f"Friend-style explainers:\n{friend_text}"
+        )
+        blocks.append(block.strip())
+
+    checklist_text = "\n- ".join(checklist) if checklist else "No checklist generated."
+    return (
+        f"{title}\n\n"
+        f"Act 1 - Mission Brief:\n{opening}\n\n"
+        f"Act 2 - Story Cards:\n\n"
+        + "\n\n".join(blocks)
+        + "\n\n"
+        f"Act 3 - Checkpoint:\n{checkpoint}\n\n"
+        f"Final Boss:\n{boss_level}\n\n"
+        f"Mission Checklist:\n- {checklist_text}"
+    )
+
+
 @traceable(run_type="chain", name="generate_learning_event")
 def generate_learning_event(state: PipelineState) -> PipelineState:
     seed = state.get("scenario_seed", {})
-    focus = seed.get("focus", "general review")
-    secondary = seed.get("secondary", [])
-    concepts = state.get("priority_concepts", [])
+    all_concepts = [str(c).strip() for c in state.get("normalized_concepts", []) if str(c).strip()]
+    prioritized = [str(c).strip() for c in state.get("priority_concepts", []) if str(c).strip()]
+    if not prioritized:
+        prioritized = all_concepts[:10]
+
+    concepts: list[str] = []
+    seen: set[str] = set()
+    for concept in prioritized:
+        key = concept.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        concepts.append(concept)
+        if len(concepts) >= 10:
+            break
+
+    if not concepts and all_concepts:
+        for concept in all_concepts:
+            key = concept.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            concepts.append(concept)
+            if len(concepts) >= 10:
+                break
+
+    focus = str(seed.get("focus", "")).strip() or (concepts[0] if concepts else "general review")
+    if not concepts:
+        concepts = [focus]
+    secondary = [c for c in concepts if c.lower() != focus.lower()]
+    topic_pairs = _pair_topics(concepts)
 
     llm_result, llm_status = _llm_json(
         system_prompt=(
-            "You are an expert educational story writer and learning designer. "
-            "You transform technical study material into engaging, accurate, exam-focused narratives. "
-            "Never invent topics not present in the source text or concepts. "
+            "You are an expert educational story writer and exam-prep learning designer. "
+            "Your output must be story-driven, exam-focused, and conversational. "
+            "Never invent topics not present in the source text or provided concept list. "
             "Return valid JSON only."
         ),
         user_prompt=(
-            "Task: write an interactive learning story using only the given concepts and source text.\n"
-            "Goal: help a student understand concepts deeply and retain them for exams.\n\n"
+            "Task: build story cards for exam revision using topic PAIRS only.\n"
+            "Goal: combine two topics in each card and explain them like a friend helping before the exam.\n\n"
             "Hard constraints:\n"
-            "1) Use ONLY ideas grounded in the provided concepts/source text.\n"
-            "2) Story must be second-person (\"you\") and engaging, but academically accurate.\n"
-            "3) Keep explanations simple, concrete, and beginner-friendly.\n"
-            "4) Include exactly 2 decision points in the story (Choice A / Choice B).\n"
-            "5) Include exactly 1 quick recall question.\n"
-            "6) Tie at least 3 priority concepts into the narrative naturally.\n"
-            "7) Avoid fluff, fantasy drift, and generic motivational filler.\n"
-            "8) Checklist must be practical and exam-oriented (4 to 6 items).\n"
-            "9) Use concise sections so it is readable in one sitting.\n\n"
+            "1) Create exactly one story_card for each pair in TOPIC_PAIRS.\n"
+            "2) topics in each story_card must be exactly the same as one given pair.\n"
+            "3) importance must be one of: high, medium, low.\n"
+            "4) story must be at least 450 words per story_card.\n"
+            "5) Do NOT format any formal quiz (no MCQ, no answer key blocks).\n"
+            "6) Add friend_explainers as natural conversational prompts (2-4 lines), like friends teaching each other.\n"
+            "7) Keep output practical for exam preparation; avoid fluff.\n"
+            "8) checklist must be topic/subtopic-driven and exam actionable.\n\n"
+            "9) You must write in second-person protagonist style: the learner is always 'you'.\n"
+            "10) Each story must feel like a scene with progression (setup -> struggle -> breakthrough -> takeaway).\n"
+            "11) Avoid textbook voice. No generic lecture tone.\n\n"
             "Writing style:\n"
             "- energetic, clear, and focused\n"
-            "- short paragraphs\n"
-            "- concept-first explanations with mini examples\n"
-            "- each section should move learning forward\n\n"
+            "- cinematic but realistic exam-night tone\n"
+            "- second-person protagonist narration (you/your)\n"
+            "- concrete examples and reasoning steps\n"
+            "- no formal quiz language\n\n"
             "Return JSON with exact keys:\n"
             "{"
             "\"title\": str, "
             "\"storytelling\": str, "
-            "\"checklist\": [str, str, str, str, ...], "
+            "\"story_cards\": ["
+            "{"
+            "\"title\": str, "
+            "\"topics\": [str, ...], "
+            "\"importance\": \"high\"|\"medium\"|\"low\", "
+            "\"subtopics\": [str, ...], "
+            "\"story\": str, "
+            "\"friend_explainers\": [str, ...]"
+            "}, ..."
+            "], "
+            "\"subtopics\": [str, str, ...], "
+            "\"checklist\": [str, ...], "
             "\"opening\": str, "
             "\"checkpoint\": str, "
             "\"boss_level\": str"
             "}\n"
             "No markdown. No extra keys. No commentary.\n\n"
             f"CONCEPTS: {concepts}\n\n"
+            f"TOPIC_PAIRS: {topic_pairs}\n\n"
             f"SOURCE TEXT:\n{state.get('cleaned_text', '')[:12000]}"
         ),
     )
     if llm_result:
         title = str(llm_result.get("title", f"LastMinute Mission: {focus}")).strip()
-        storytelling = str(llm_result.get("storytelling", "")).strip()
+        storytelling_summary = str(llm_result.get("storytelling", "")).strip()
+        story_cards = _normalize_story_cards(
+            llm_result.get("story_cards", []),
+            concepts,
+            topic_pairs,
+        )
+
+        llm_subtopics = llm_result.get("subtopics", [])
         llm_checklist = llm_result.get("checklist", [])
-        checklist = [str(item).strip() for item in llm_checklist if str(item).strip()]
-        if not checklist:
-            checklist = [
-                f"Read and annotate the section around '{focus}'.",
-                "Write three flashcards from the material.",
-                "Solve one timed practice question.",
-                "Summarize the topic from memory.",
-            ]
+        llm_items: list[str] = []
+        if isinstance(llm_subtopics, list):
+            llm_items.extend(str(item).strip() for item in llm_subtopics if str(item).strip())
+        if isinstance(llm_checklist, list):
+            llm_items.extend(str(item).strip() for item in llm_checklist if str(item).strip())
+        llm_items.extend(_story_cards_to_checklist(story_cards))
+
+        checklist = _normalized_subtopic_checklist(
+            focus,
+            concepts,
+            secondary,
+            llm_items,
+            max_items=max(1, len(concepts)),
+        )
         story = {
             "title": title,
             "opening": str(llm_result.get("opening", "")).strip(),
             "checkpoint": str(llm_result.get("checkpoint", "")).strip(),
             "boss_level": str(llm_result.get("boss_level", "")).strip(),
+            "topic_storylines": story_cards,
         }
-        story_text = storytelling or (
-            f"{title}\n\n"
-            f"Act 1 - The Briefing:\n{story['opening']}\n\n"
-            f"Act 2 - The Checkpoint:\n{story['checkpoint']}\n\n"
-            f"Final Boss:\n{story['boss_level']}\n\n"
-            f"Mission Checklist:\n- " + "\n- ".join(checklist)
+        composed = _compose_story_text(
+            title=title,
+            opening=story["opening"] or f"Your revision starts with {focus}.",
+            checkpoint=story["checkpoint"] or "Solve one timed prompt per topic before moving on.",
+            boss_level=story["boss_level"] or "Teach all priority topics in plain language without notes.",
+            story_cards=story_cards,
+            checklist=checklist,
+        )
+        story_text = (
+            f"{storytelling_summary}\n\n{composed}"
+            if storytelling_summary
+            else composed
         )
         event = {
             "title": title.lower(),
-            "format": "interactive-story",
+            "format": "interactive-story-pack",
             "tasks": checklist,
+            "subtopics": checklist,
             "concepts": concepts,
+            "topic_storylines": story_cards,
             "interactive_story": story,
             "final_storytelling": story_text,
+            "coverage_ratio": round(len(concepts) / max(len(all_concepts), 1), 3),
         }
         return {
             **state,
@@ -375,40 +874,45 @@ def generate_learning_event(state: PipelineState) -> PipelineState:
             "llm_status": "ok",
         }
 
-    checklist = [
-        f"Read and annotate the section around '{focus}'.",
-        f"Create 3 flashcards for '{focus}' and key terms.",
-        "Answer 5 quick self-test questions from the uploaded material.",
-        "Write a 4-line summary from memory.",
+    story_cards = [
+        _fallback_story_card(pair, _importance_for_rank(idx, max(len(topic_pairs), 1)))
+        for idx, pair in enumerate(topic_pairs)
     ]
-    if secondary:
-        checklist.append(f"Link '{focus}' with '{secondary[0]}' in one example.")
+    fallback_items = _story_cards_to_checklist(story_cards)
+    checklist = _normalized_subtopic_checklist(
+        focus,
+        concepts,
+        secondary,
+        fallback_items,
+        max_items=max(1, len(concepts)),
+    )
 
     story = {
         "title": f"LastMinute Mission: {focus}",
         "opening": f"You are 24 hours from the exam. Your mission starts with {focus}.",
-        "checkpoint": "Unlock the next checkpoint by solving one practice prompt.",
+        "checkpoint": "Unlock each checkpoint by explaining each story card to a friend in your own words.",
         "boss_level": "Teach the concept back in plain language without notes.",
+        "topic_storylines": story_cards,
     }
-    concepts_text = ", ".join(concepts) if concepts else "core ideas"
-    story_text = (
-        f"{story['title']}\n\n"
-        f"Act 1 - The Briefing:\n{story['opening']}\n\n"
-        f"Act 2 - The Route:\n"
-        f"Your guide marks these concepts as critical: {concepts_text}.\n"
-        f"Every checkpoint you clear gives you more control of the final exam map.\n\n"
-        f"Act 3 - The Checkpoint:\n{story['checkpoint']}\n\n"
-        f"Final Boss:\n{story['boss_level']}\n\n"
-        f"Mission Checklist:\n- " + "\n- ".join(checklist)
+    story_text = _compose_story_text(
+        title=story["title"],
+        opening=story["opening"],
+        checkpoint=story["checkpoint"],
+        boss_level=story["boss_level"],
+        story_cards=story_cards,
+        checklist=checklist,
     )
 
     event = {
         "title": f"mission: {focus}",
-        "format": "guided practice",
+        "format": "guided-story-pack",
         "tasks": checklist,
+        "subtopics": checklist,
         "concepts": concepts,
+        "topic_storylines": story_cards,
         "interactive_story": story,
         "final_storytelling": story_text,
+        "coverage_ratio": round(len(concepts) / max(len(all_concepts), 1), 3),
     }
     return {
         **state,

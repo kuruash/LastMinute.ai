@@ -1,31 +1,45 @@
 "use client";
 
 import { useRef, useEffect } from "react";
-import type { TopicLesson } from "@/types";
-import { SectionCard } from "@/components/workspace/section-card";
-import { Lock, CheckCircle2, ChevronRight, Loader2 } from "lucide-react";
+import type { TopicStorylineCard } from "@/types";
+import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface LessonViewProps {
-  lessons: TopicLesson[];
   activeTopicId: string | null;
+  missionTitle: string;
+  missionStory: string;
+  topicStorylines: TopicStorylineCard[];
+  currentStoryIndex: number;
+  totalStories: number;
+  canGoPrevStory: boolean;
+  canGoNextStory: boolean;
+  onPrevStory: () => void;
+  onNextStory: () => void;
   loading: boolean;
-  onSubmitAnswer: (
-    topicId: string,
-    sectionId: string,
-    answer: string
-  ) => Promise<void>;
-  onCompleteTopic: (topicId: string) => void;
 }
 
 export function LessonView({
-  lessons,
   activeTopicId,
+  missionTitle,
+  missionStory,
+  topicStorylines,
+  currentStoryIndex,
+  totalStories,
+  canGoPrevStory,
+  canGoNextStory,
+  onPrevStory,
+  onNextStory,
   loading,
-  onSubmitAnswer,
-  onCompleteTopic,
 }: LessonViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const cleanCardTitle = (rawTitle: string, fallback: string) => {
+    const cleaned = rawTitle
+      .replace(/^explanation\s*[-—:]\s*/i, "")
+      .replace(/^story\s*card\s*\d+\s*[-—:]\s*/i, "")
+      .trim();
+    return cleaned || fallback;
+  };
 
   // Scroll to active topic when it changes
   useEffect(() => {
@@ -39,28 +53,27 @@ export function LessonView({
     }
   }, [activeTopicId]);
 
-  /* ---- Loading state ---- */
-  if (loading && lessons.length === 0) {
+  if (loading) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         <div className="text-center">
           <p className="text-sm text-foreground">
-            Generating your lessons...
+            Loading your story cards...
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Building structured content for each topic
+            Preparing your mission workspace
           </p>
         </div>
       </div>
     );
   }
 
-  if (lessons.length === 0) {
+  if (topicStorylines.length === 0 && !missionStory.trim()) {
     return (
       <div className="flex h-full items-center justify-center">
         <p className="text-sm text-muted-foreground">
-          No lessons available. Upload study materials first.
+          No story cards available. Upload study materials first.
         </p>
       </div>
     );
@@ -69,98 +82,145 @@ export function LessonView({
   return (
     <div ref={scrollRef} className="h-full overflow-y-auto">
       <div className="mx-auto max-w-2xl px-6 py-8">
-        {lessons.map((lesson) => {
-          const isActive = lesson.status === "active";
-          const isCompleted = lesson.status === "completed";
-          const isLocked = lesson.status === "locked";
+        {topicStorylines.length > 0 ? (
+          <section className="mb-8 space-y-4">
+            <div className="rounded-lg border border-border bg-muted/30 p-5">
+              <h2 className="text-sm font-semibold tracking-tight text-foreground">
+                {missionTitle}
+              </h2>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Story-driven revision guide for your exam prep.
+              </p>
+            </div>
+            {topicStorylines
+              .filter((_, idx) => idx === currentStoryIndex)
+              .map((card, idx) => {
+              const absoluteIdx = currentStoryIndex;
+              const importance = card.importance?.toLowerCase?.() ?? "medium";
+              const importanceClass =
+                importance === "high"
+                  ? "border-foreground/50 bg-foreground/5 text-foreground"
+                  : importance === "low"
+                    ? "border-border bg-muted text-muted-foreground"
+                    : "border-border bg-background text-foreground";
+              return (
+                <article
+                  key={`${card.title}-${absoluteIdx}`}
+                  data-topic-id={`story-${absoluteIdx}`}
+                  className="rounded-lg border border-border bg-background p-5"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <h3 className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
+                      Explanation —{" "}
+                      {cleanCardTitle(card.title || "", `Focus Area ${absoluteIdx + 1}`)}
+                    </h3>
+                    <span
+                      className={cn(
+                        "rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                        importanceClass
+                      )}
+                    >
+                      {importance.toUpperCase()}
+                    </span>
+                  </div>
 
-          const practiceCount = lesson.sections.filter(
-            (s) => s.type === "practice"
-          ).length;
-          const answeredCount = lesson.sections.filter(
-            (s) => s.type === "practice" && s.answered
-          ).length;
-          const allAnswered = practiceCount > 0 && answeredCount === practiceCount;
-
-          return (
-            <div
-              key={lesson.topicId}
-              data-topic-id={lesson.topicId}
-              className={cn(
-                "mb-10 last:mb-0",
-                isLocked && "opacity-50 pointer-events-none"
-              )}
-            >
-              {/* Topic header */}
-              <div className="mb-6 flex items-center gap-3">
-                {isCompleted && (
-                  <CheckCircle2 className="h-5 w-5 shrink-0 text-foreground" />
-                )}
-                {isLocked && (
-                  <Lock className="h-5 w-5 shrink-0 text-muted-foreground" />
-                )}
-                {isActive && (
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-foreground" />
-                )}
-                <h2 className="text-lg font-semibold tracking-tight text-foreground">
-                  {lesson.topicName}
-                </h2>
-                {isCompleted && (
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    Completed
-                  </span>
-                )}
-                {isActive && practiceCount > 0 && (
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    {answeredCount}/{practiceCount} answered
-                  </span>
-                )}
-              </div>
-
-              {/* Sections */}
-              {!isLocked && (
-                <div className="space-y-5">
-                  {lesson.sections.map((section) => (
-                    <SectionCard
-                      key={section.id}
-                      section={section}
-                      onSubmitAnswer={async (sectionId, answer) => {
-                        await onSubmitAnswer(lesson.topicId, sectionId, answer);
-                      }}
-                    />
-                  ))}
-
-                  {/* Complete topic button */}
-                  {isActive && allAnswered && (
-                    <div className="flex justify-center pt-4">
-                      <button
-                        type="button"
-                        onClick={() => onCompleteTopic(lesson.topicId)}
-                        className="flex items-center gap-2 rounded-md border border-foreground bg-foreground px-6 py-2.5 text-sm font-medium text-background transition-colors hover:bg-foreground/90"
-                      >
-                        Complete Topic
-                        <ChevronRight className="h-4 w-4" />
-                      </button>
+                  {card.topics.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {card.topics.map((topic) => (
+                        <span
+                          key={topic}
+                          className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground"
+                        >
+                          {topic}
+                        </span>
+                      ))}
                     </div>
                   )}
-                </div>
-              )}
 
-              {/* Locked placeholder */}
-              {isLocked && (
-                <div className="rounded-lg border border-dashed border-border p-8 text-center">
-                  <Lock className="mx-auto mb-2 h-5 w-5 text-muted-foreground" />
-                  <p className="text-xs text-muted-foreground">
-                    Complete the previous topic to unlock
+                  {card.subtopics.length > 0 && (
+                    <ul className="mt-3 space-y-1.5">
+                      {card.subtopics.map((subtopic, subIdx) => (
+                        <li
+                          key={`${subtopic}-${subIdx}`}
+                          className="text-sm text-muted-foreground"
+                        >
+                          • {subtopic}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  <p className="mt-4 whitespace-pre-line text-sm leading-relaxed text-foreground">
+                    {card.story}
                   </p>
-                </div>
-              )}
 
-              {/* Divider between topics */}
-              <div className="mt-10 border-t border-border" />
+                  {card.friend_explainers && card.friend_explainers.length > 0 && (
+                    <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">
+                      <p className="mb-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                        Friend-style explainers
+                      </p>
+                      <ul className="space-y-1.5">
+                        {card.friend_explainers.map((line, lineIdx) => (
+                          <li
+                            key={`${line}-${lineIdx}`}
+                            className="text-sm text-muted-foreground"
+                          >
+                            • {line}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+            <div className="flex items-center justify-between rounded-lg border border-border bg-background px-4 py-3">
+              <span className="text-xs text-muted-foreground">
+                Topic {Math.min(currentStoryIndex + 1, Math.max(totalStories, 1))} / {Math.max(totalStories, 1)}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={onPrevStory}
+                  disabled={!canGoPrevStory}
+                  className={cn(
+                    "flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs transition-colors",
+                    canGoPrevStory
+                      ? "border-border text-foreground hover:bg-muted"
+                      : "cursor-not-allowed border-border text-muted-foreground/40"
+                  )}
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                  Back Topic
+                </button>
+                <button
+                  type="button"
+                  onClick={onNextStory}
+                  disabled={!canGoNextStory}
+                  className={cn(
+                    "flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs transition-colors",
+                    canGoNextStory
+                      ? "border-foreground bg-foreground text-background hover:bg-foreground/90"
+                      : "cursor-not-allowed border-border text-muted-foreground/40"
+                  )}
+                >
+                  Next Topic
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
-          );
-        })}
+          </section>
+        ) : missionStory.trim() && (
+          <section className="mb-8 rounded-lg border border-border bg-muted/30 p-5">
+            <h2 className="text-sm font-semibold tracking-tight text-foreground">
+              {missionTitle}
+            </h2>
+            <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-muted-foreground">
+              {missionStory}
+            </p>
+          </section>
+        )}
+
       </div>
     </div>
   );

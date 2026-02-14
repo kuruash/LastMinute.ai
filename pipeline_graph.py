@@ -1,9 +1,14 @@
+import base64
 import json
 import os
 import re
+import threading
+import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, TypedDict
 
+import requests as _http
 from langgraph.graph import END, StateGraph
 
 from agents.preprocessing.text_normalizer import normalize_text
@@ -35,6 +40,7 @@ class PipelineState(TypedDict):
     todo_checklist: list
     interactive_story: dict
     final_storytelling: str
+    story_beats: list
     llm_used: bool
     llm_status: str
 
@@ -206,7 +212,7 @@ def concept_extraction(state: PipelineState) -> PipelineState:
             "9) If not clearly explainable, exclude it.\n"
             "Output JSON only with exact schema: {\"concepts\": [\"...\"]}\n"
             "No markdown. No extra keys. No commentary.\n\n"
-            f"SOURCE TEXT:\n{text[:12000]}"
+            f"TEXT:\n{text[:12000]}"
         ),
     )
     llm_concepts = llm_result.get("concepts", [])
@@ -420,6 +426,258 @@ def generate_learning_event(state: PipelineState) -> PipelineState:
     }
 
 
+def _get_api_key() -> str:
+    """Return the Gemini/Google API key from env or .env files."""
+    return (
+        _read_env_file_value("GEMINI_API_KEY")
+        or _read_env_file_value("GOOGLE_API_KEY")
+        or os.getenv("GEMINI_API_KEY", "").strip()
+        or os.getenv("GOOGLE_API_KEY", "").strip()
+    )
+
+
+# Global rate-limiter: allow at most 1 image request per _IMG_MIN_INTERVAL seconds
+# to stay well within Gemini free-tier limits (~10-15 RPM for image gen).
+_IMG_LOCK = threading.Lock()
+_IMG_LAST_CALL = 0.0
+_IMG_MIN_INTERVAL = 4.0  # seconds between requests
+_IMG_MAX_RETRIES = 4
+_IMG_BASE_BACKOFF = 5.0  # seconds
+
+
+def _generate_image(description: str) -> str | None:
+    """Call Gemini image generation API with retry + rate limiting."""
+    global _IMG_LAST_CALL
+    api_key = _get_api_key()
+    if not api_key:
+        return None
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-2.0-flash-exp-image-generation:generateContent"
+        f"?key={api_key}"
+    )
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": (
+                            f"{description} "
+                            "Render as a single, high-clarity diagram: crisp lines, "
+                            "distinct elements, no blur. Each concept must have a "
+                            "unique visual — no repeated icons or duplicate labels. "
+                            "No placeholder or lorem ipsum text."
+                        )
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {"responseModalities": ["Text", "Image"]},
+    }
+
+    for attempt in range(_IMG_MAX_RETRIES):
+        # ── Rate-limit: ensure minimum gap between requests ──────
+        with _IMG_LOCK:
+            now = time.monotonic()
+            wait = _IMG_MIN_INTERVAL - (now - _IMG_LAST_CALL)
+            if wait > 0:
+                time.sleep(wait)
+            _IMG_LAST_CALL = time.monotonic()
+
+        try:
+            resp = _http.post(url, json=payload, timeout=90)
+
+            # Rate-limited or server error → retry with backoff
+            if resp.status_code in (429, 500, 502, 503):
+                backoff = _IMG_BASE_BACKOFF * (2 ** attempt)
+                print(
+                    f"Image API {resp.status_code} (attempt {attempt + 1}/"
+                    f"{_IMG_MAX_RETRIES}), retrying in {backoff:.0f}s..."
+                )
+                time.sleep(backoff)
+                continue
+
+            if resp.status_code != 200:
+                print(f"Image API returned {resp.status_code}: {resp.text[:300]}")
+                return None
+
+            data = resp.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                return None
+            parts = candidates[0].get("content", {}).get("parts", [])
+            for part in parts:
+                inline = part.get("inlineData")
+                if inline and inline.get("data"):
+                    mime = inline.get("mimeType", "image/png")
+                    return f"data:{mime};base64,{inline['data']}"
+            return None
+        except Exception as exc:
+            if attempt < _IMG_MAX_RETRIES - 1:
+                backoff = _IMG_BASE_BACKOFF * (2 ** attempt)
+                print(f"Image gen error (attempt {attempt + 1}): {exc}, retry in {backoff:.0f}s")
+                time.sleep(backoff)
+            else:
+                print(f"Image generation failed after {_IMG_MAX_RETRIES} attempts: {exc}")
+                return None
+
+    return None
+
+
+def generate_story_visuals(state: PipelineState) -> PipelineState:
+    """Break the story into beats with 3 step-by-step concept images each."""
+    story_text = state.get("final_storytelling", "")
+    concepts = state.get("priority_concepts", [])
+    if not story_text:
+        return {**state, "story_beats": []}
+
+    concepts_str = ", ".join(concepts) if concepts else "the main topics"
+
+    # ── Step 1: Decompose story into beats with 3 image steps per beat ─
+    # We also pass the original cleaned_text so the LLM can reference
+    # the exact slide content, not just the story paraphrase.
+    source_text = state.get("cleaned_text", "")
+
+    result, _ = _llm_json(
+        system_prompt=(
+            "You are an educational visual designer. You break lecture content "
+            "into sequential beats, each covering ONE concept from the slides.\n\n"
+            "STRICT RULES:\n"
+            "1. Each beat's narrative must contain ONLY information from the "
+            "   source slides. Do NOT invent examples, names, or scenarios.\n"
+            "2. Use the EXACT terminology and definitions from the slides.\n"
+            "3. The beat label must be the actual concept name from the slides.\n"
+            "4. For EACH beat, create exactly 3 image_steps — each step must "
+            "   show a DIFFERENT visual (no repeated icons, layouts, or labels):\n"
+            "     Step 1: one clear diagram (e.g. single framework or definition)\n"
+            "     Step 2: a different diagram (e.g. process or mechanism)\n"
+            "     Step 3: a different diagram again (e.g. result or comparison)\n"
+            "5. AVOID REPETITION: Do not reuse the same icon, symbol, or label "
+            "   for different concepts. Each step must have its own distinct "
+            "   visual. Within one step, each element (e.g. each of the 4 Ps) "
+            "   must have a unique shape/icon — no duplicate labels in one image.\n"
+            "6. Image prompts must be SPECIFIC: name each element once, clearly "
+            "   (e.g. 'four boxes: one labeled Product, one Price, one Place, "
+            "   one Promotion — each with a different symbol').\n\n"
+            "Return valid JSON only."
+        ),
+        user_prompt=(
+            "Break this lecture content into 4-6 sequential beats.\n\n"
+            f"CONCEPTS FROM SLIDES: {concepts_str}\n\n"
+            "For each beat provide:\n"
+            "  - label: the concept name (exact term from slides)\n"
+            "  - narrative: 2-5 sentences covering what the slides say about "
+            "    this concept. Use exact definitions and terms from the source.\n"
+            "    Write in second-person ('you learn that...').\n"
+            "  - is_decision: true if this beat has a decision point\n"
+            "  - choices: array of choice labels from actual slide content "
+            "    (empty if not a decision)\n"
+            "  - image_steps: EXACTLY 3 objects, each with:\n"
+            "      - step_label: e.g. 'Step 1: [one specific aspect]'\n"
+            "      - prompt: a DETAILED description for ONE clear diagram.\n"
+            "        Rules for the prompt:\n"
+            "        • Describe exactly which elements appear (each with a "
+            "          distinct shape or icon — no two elements the same).\n"
+            "        • Step 1, 2, and 3 must describe DIFFERENT compositions "
+            "          (no copy-paste; vary layout and focus).\n"
+            "        • Use concrete terms from the slides (e.g. Product, Price, "
+            "          Place, Promotion — each named once with a unique visual).\n"
+            "        BAD: repeating 'PRODUCT' on two nodes; same icon for "
+            "        different concepts; generic 'three people' icons.\n"
+            "        GOOD: 'Four distinct quadrants: top-left Product (box icon), "
+            "        top-right Price (coin icon), bottom-left Place (pin icon), "
+            "        bottom-right Promotion (megaphone icon), all pointing to "
+            "        center Target Market'\n\n"
+            "Return JSON:\n"
+            '{"beats": [\n'
+            '  {"label": "...", "narrative": "...", "is_decision": false, '
+            '"choices": [], "image_steps": [\n'
+            '    {"step_label": "Step 1: ...", "prompt": "..."},\n'
+            '    {"step_label": "Step 2: ...", "prompt": "..."},\n'
+            '    {"step_label": "Step 3: ...", "prompt": "..."}\n'
+            "  ]},\n"
+            "  ...\n"
+            "]}\n\n"
+            f"ORIGINAL SLIDE CONTENT:\n{source_text[:8000]}\n\n"
+            f"STORY (for structure reference):\n{story_text[:4000]}"
+        ),
+    )
+    beats_raw = result.get("beats", [])
+    if not isinstance(beats_raw, list) or not beats_raw:
+        return {**state, "story_beats": []}
+
+    beats: list[dict[str, Any]] = []
+    for b in beats_raw[:6]:
+        raw_steps = b.get("image_steps", [])
+        image_steps: list[dict[str, str]] = []
+        for s in raw_steps[:3]:
+            image_steps.append(
+                {
+                    "step_label": str(s.get("step_label", "")).strip(),
+                    "prompt": str(s.get("prompt", "")).strip(),
+                    "image_data": "",
+                }
+            )
+        # Pad to 3 if the LLM returned fewer
+        while len(image_steps) < 3:
+            image_steps.append({"step_label": "", "prompt": "", "image_data": ""})
+
+        beats.append(
+            {
+                "label": str(b.get("label", "")).strip(),
+                "narrative": str(b.get("narrative", "")).strip(),
+                "is_decision": bool(b.get("is_decision", False)),
+                "choices": [
+                    str(c).strip() for c in b.get("choices", []) if str(c).strip()
+                ],
+                "image_steps": image_steps,
+            }
+        )
+
+    # ── Step 2: Generate all step images in parallel ──────────────────
+    # Each job is (beat_index, step_index, prompt_text)
+    jobs: list[tuple[int, int, str]] = []
+    for bi, beat in enumerate(beats):
+        for si, step in enumerate(beat["image_steps"]):
+            if step["prompt"]:
+                jobs.append((bi, si, step["prompt"]))
+
+    def _gen_step_image(
+        beat_idx: int, step_idx: int, prompt_text: str
+    ) -> tuple[int, int, str | None]:
+        full_prompt = (
+            f"Create a single, clear educational diagram: {prompt_text}. "
+            "Style: crisp vector-style illustration, high clarity, bold shapes "
+            "and clear visual hierarchy. Use bright, distinct colors per element "
+            "so each part is easy to tell apart. "
+            "Each element in the diagram must have a UNIQUE icon or shape — "
+            "do NOT use the same icon or label for different concepts; no "
+            "duplicate symbols. "
+            "Do NOT add placeholder text, lorem ipsum, or gibberish. "
+            "If labels are essential (e.g. Product, Price, Place, Promotion), "
+            "use a few large, bold, readable labels only — no small or blurry text. "
+            "Do NOT show people, faces, or generic office scenes. "
+            "One focal diagram per image, no clutter."
+        )
+        return beat_idx, step_idx, _generate_image(full_prompt)
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [
+            pool.submit(_gen_step_image, bi, si, prompt)
+            for bi, si, prompt in jobs
+        ]
+        for future in as_completed(futures):
+            try:
+                bi, si, img = future.result()
+                if img:
+                    beats[bi]["image_steps"][si]["image_data"] = img
+            except Exception:
+                pass
+
+    return {**state, "story_beats": beats}
+
+
 def build_graph():
     graph = StateGraph(PipelineState)
     graph.add_node("store_raw_files", store_raw_files)
@@ -431,6 +689,7 @@ def build_graph():
     graph.add_node("estimate_priority", estimate_priority)
     graph.add_node("select_scenario_seed", select_scenario_seed)
     graph.add_node("generate_learning_event", generate_learning_event)
+    graph.add_node("generate_story_visuals", generate_story_visuals)
 
     graph.set_entry_point("store_raw_files")
     graph.add_edge("store_raw_files", "extract_text")
@@ -441,7 +700,8 @@ def build_graph():
     graph.add_edge("normalize_concepts", "estimate_priority")
     graph.add_edge("estimate_priority", "select_scenario_seed")
     graph.add_edge("select_scenario_seed", "generate_learning_event")
-    graph.add_edge("generate_learning_event", END)
+    graph.add_edge("generate_learning_event", "generate_story_visuals")
+    graph.add_edge("generate_story_visuals", END)
     return graph.compile()
 
 
@@ -463,6 +723,7 @@ def run_pipeline(raw_files: list, extracted_text: str = "") -> PipelineState:
         "todo_checklist": [],
         "interactive_story": {},
         "final_storytelling": "",
+        "story_beats": [],
         "llm_used": False,
         "llm_status": "",
     }

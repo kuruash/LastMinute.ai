@@ -7,16 +7,30 @@ import { spawn } from "child_process";
 
 export const runtime = "nodejs";
 
+interface ImageStep {
+  step_label: string;
+  prompt: string;
+  image_data: string;
+}
+
+interface StoryBeat {
+  label: string;
+  narrative: string;
+  is_decision: boolean;
+  choices: string[];
+  image_steps: ImageStep[];
+}
+
 interface LoaderResult {
   chars: number;
   preview: string;
-  /** Full extracted text (capped for very large docs to avoid huge responses) */
   text: string;
   learningEvent: Record<string, unknown>;
   concepts: string[];
   checklist: string[];
   interactiveStory: Record<string, unknown>;
   finalStorytelling: string;
+  storyBeats: StoryBeat[];
   llmUsed: boolean;
   llmStatus: string;
   pipelineTrace: Array<Record<string, unknown>>;
@@ -81,6 +95,7 @@ try:
         checklist = pipeline_state.get("todo_checklist", [])
         interactive_story = pipeline_state.get("interactive_story", {})
         final_storytelling = pipeline_state.get("final_storytelling", "")
+        story_beats = pipeline_state.get("story_beats", [])
         llm_used = bool(pipeline_state.get("llm_used", False))
         llm_status = str(pipeline_state.get("llm_status", ""))
     except Exception:
@@ -97,6 +112,7 @@ try:
             "checkpoint": "Solve one mixed question.",
             "boss_level": "Teach back without notes."
         }
+        story_beats = []
         final_storytelling = """LastMinute Mission: General Review
 
 Act 1 - The Briefing:
@@ -127,6 +143,7 @@ Teach the chapter in simple words from memory."""
         "checklist": checklist,
         "interactive_story": interactive_story,
         "final_storytelling": final_storytelling,
+        "story_beats": story_beats,
         "llm_used": llm_used,
         "llm_status": llm_status,
         "pipeline_trace": pipeline_trace
@@ -176,6 +193,9 @@ except Exception as error:
               unknown
             >,
             finalStorytelling: String(payload.final_storytelling ?? ""),
+            storyBeats: Array.isArray(payload.story_beats)
+              ? (payload.story_beats as StoryBeat[])
+              : [],
             llmUsed: Boolean(payload.llm_used ?? false),
             llmStatus: String(payload.llm_status ?? ""),
             pipelineTrace: Array.isArray(payload.pipeline_trace)
@@ -227,6 +247,7 @@ export async function POST(request: Request) {
       checklist: result.checklist,
       interactive_story: result.interactiveStory,
       final_storytelling: result.finalStorytelling,
+      story_beats: result.storyBeats,
       llm_used: result.llmUsed,
       llm_status: result.llmStatus,
       pipeline_trace: result.pipelineTrace,

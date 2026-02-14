@@ -9,7 +9,9 @@ import {
   ArrowUpIcon,
   BookOpen,
   Brain,
+  ChevronRight,
   FileUp,
+  ImageIcon,
   Paperclip,
   PlusIcon,
   Sparkles,
@@ -81,6 +83,17 @@ export function VercelV0Chat() {
       checklist: string[];
       storyTitle: string;
       storyOpening: string;
+      beats: Array<{
+        label: string;
+        narrative: string;
+        is_decision: boolean;
+        choices: string[];
+        image_steps: Array<{
+          step_label: string;
+          prompt: string;
+          image_data: string;
+        }>;
+      }>;
     }>
   >([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -141,6 +154,17 @@ export function VercelV0Chat() {
             checklist?: string[];
             interactive_story?: { title?: string; opening?: string };
             final_storytelling?: string;
+            story_beats?: Array<{
+              label: string;
+              narrative: string;
+              is_decision: boolean;
+              choices: string[];
+              image_steps: Array<{
+                step_label: string;
+                prompt: string;
+                image_data: string;
+              }>;
+            }>;
             llm_used?: boolean;
             llm_status?: string;
             pipeline_trace?: Array<{ node?: string }>;
@@ -172,9 +196,9 @@ export function VercelV0Chat() {
           checklist: r.data.checklist ?? [],
           storyTitle: r.data.interactive_story?.title ?? "LastMinute Mission",
           storyOpening: r.data.interactive_story?.opening ?? "",
+          beats: r.data.story_beats ?? [],
         }));
         setLearningOutput(mapped);
-
         const summary = succeeded
           .map((r) => {
             const base = `${r.data.filename ?? r.file.name} (${r.data.chars ?? 0} chars)`;
@@ -203,7 +227,7 @@ export function VercelV0Chat() {
   };
 
   return (
-    <div className="flex w-full max-w-2xl flex-col items-center gap-10 px-4 py-16">
+    <div className="flex w-full max-w-4xl flex-col items-center gap-10 px-4 py-16">
       {/* Heading */}
       <div className="flex flex-col items-center gap-2 text-center">
         <h1 className="text-3xl font-semibold tracking-tight text-foreground">
@@ -327,42 +351,126 @@ export function VercelV0Chat() {
           </p>
         ) : null}
         {learningOutput.length > 0 ? (
-          <div className="mt-4 space-y-3">
+          <div className="mt-6 space-y-6">
             {learningOutput.map((item) => (
               <div
                 key={item.filename}
-                className="rounded-xl border border-border bg-card p-4 text-sm text-foreground"
+                className="rounded-2xl border border-border bg-card text-sm text-foreground overflow-hidden"
               >
-                <p className="text-xs text-muted-foreground">{item.filename}</p>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  {item.llmUsed ? "LLM-generated story" : "Fallback story (LLM unavailable)"}
-                </p>
-                {!item.llmUsed && item.llmStatus ? (
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    Reason: {item.llmStatus}
+                <div className="border-b border-border bg-muted/30 px-5 py-3">
+                  <p className="text-xs font-medium text-foreground">{item.filename}</p>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">
+                    {item.llmUsed ? "LLM-generated story" : "Fallback story (LLM unavailable)"}
                   </p>
-                ) : null}
-                {item.traceNodes.length > 0 ? (
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    Trace: {item.traceNodes.join(" -> ")}
-                  </p>
-                ) : null}
-                {item.storyText ? (
-                  <p className="mt-2 whitespace-pre-line leading-6">{item.storyText}</p>
-                ) : null}
-                {!item.storyText ? <p className="mt-2 font-medium">{item.storyTitle}</p> : null}
-                {!item.storyText && item.storyOpening ? (
-                  <p className="mt-1 text-muted-foreground">{item.storyOpening}</p>
-                ) : null}
-                {item.concepts.length > 0 ? (
-                  <p className="mt-3 text-xs">Concepts: {item.concepts.join(", ")}</p>
-                ) : null}
-                {item.checklist.length > 0 ? (
-                  <ul className="mt-2 list-disc pl-4 text-xs">
-                    {item.checklist.slice(0, 4).map((task, idx) => (
-                      <li key={`${item.filename}-task-${idx}`}>{task}</li>
+                  {!item.llmUsed && item.llmStatus ? (
+                    <p className="text-[11px] text-muted-foreground">
+                      Reason: {item.llmStatus}
+                    </p>
+                  ) : null}
+                  {item.traceNodes.length > 0 ? (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Trace: {item.traceNodes.join(" -> ")}
+                    </p>
+                  ) : null}
+                </div>
+
+                {item.beats && item.beats.length > 0 ? (
+                  <div className="divide-y divide-border">
+                    {item.beats.map((beat, bIdx) => (
+                      <div key={`${item.filename}-beat-${bIdx}`} className="px-5 py-5">
+                        <div className="mb-3 flex items-center gap-2">
+                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-foreground text-[11px] font-bold text-background">
+                            {bIdx + 1}
+                          </span>
+                          <h3 className="text-sm font-semibold tracking-tight text-foreground">
+                            {beat.label}
+                          </h3>
+                        </div>
+                        <p className="mb-4 whitespace-pre-line leading-relaxed text-foreground/90">
+                          {beat.narrative}
+                        </p>
+                        {beat.image_steps && beat.image_steps.some((s) => s.image_data) ? (
+                          <div className="mb-2">
+                            <p className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                              <ImageIcon className="h-3.5 w-3.5" />
+                              Step-by-step
+                            </p>
+                            <div className="grid grid-cols-3 gap-4">
+                              {beat.image_steps.map((step, sIdx) => (
+                                <div
+                                  key={`${item.filename}-beat-${bIdx}-step-${sIdx}`}
+                                  className="group overflow-hidden rounded-xl border border-border bg-muted/20 transition-shadow hover:shadow-lg"
+                                >
+                                  {step.image_data ? (
+                                    /* eslint-disable-next-line @next/next/no-img-element */
+                                    <img
+                                      src={step.image_data}
+                                      alt={step.step_label || `Step ${sIdx + 1}`}
+                                      className="h-52 w-full object-contain bg-muted/30 sm:h-64"
+                                    />
+                                  ) : (
+                                    <div className="flex h-52 w-full items-center justify-center bg-muted text-xs text-muted-foreground sm:h-64">
+                                      Generating...
+                                    </div>
+                                  )}
+                                  {step.step_label ? (
+                                    <p className="px-3 py-2 text-xs font-medium text-foreground">
+                                      {step.step_label}
+                                    </p>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                        {beat.is_decision && beat.choices.length > 0 ? (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {beat.choices.map((choice, cIdx) => (
+                              <button
+                                key={`${item.filename}-beat-${bIdx}-choice-${cIdx}`}
+                                type="button"
+                                className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                              >
+                                <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                                {choice}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
                     ))}
-                  </ul>
+                  </div>
+                ) : (
+                  <div className="px-5 py-4">
+                    {item.storyText ? (
+                      <p className="whitespace-pre-line leading-relaxed">{item.storyText}</p>
+                    ) : (
+                      <>
+                        <p className="font-medium">{item.storyTitle}</p>
+                        {item.storyOpening ? (
+                          <p className="mt-1 text-muted-foreground">{item.storyOpening}</p>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {(item.concepts.length > 0 || item.checklist.length > 0) ? (
+                  <div className="border-t border-border bg-muted/20 px-5 py-3">
+                    {item.concepts.length > 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        <span className="font-medium text-foreground">Concepts:</span>{" "}
+                        {item.concepts.join(", ")}
+                      </p>
+                    ) : null}
+                    {item.checklist.length > 0 ? (
+                      <ul className="mt-2 list-disc pl-4 text-xs text-muted-foreground">
+                        {item.checklist.slice(0, 4).map((task, idx) => (
+                          <li key={`${item.filename}-task-${idx}`}>{task}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
             ))}

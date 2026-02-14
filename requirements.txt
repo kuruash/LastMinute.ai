@@ -6,3 +6,5 @@ pdfplumber
 python-pptx
 pillow
 pytesseract
+langgraph
+google-generativeai

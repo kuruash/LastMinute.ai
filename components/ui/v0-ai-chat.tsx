@@ -70,6 +70,18 @@ export function VercelV0Chat() {
   const [value, setValue] = useState("");
   const [stagedFiles, setStagedFiles] = useState<File[]>([]);
   const [uploadStatus, setUploadStatus] = useState("");
+  const [learningOutput, setLearningOutput] = useState<
+    Array<{
+      filename: string;
+      storyText: string;
+      llmUsed: boolean;
+      llmStatus: string;
+      concepts: string[];
+      checklist: string[];
+      storyTitle: string;
+      storyOpening: string;
+    }>
+  >([]);
   const [isUploading, setIsUploading] = useState(false);
   const { textareaRef, adjustHeight } = useAutoResizeTextarea({
     minHeight: 60,
@@ -123,6 +135,13 @@ export function VercelV0Chat() {
             error?: string;
             filename?: string;
             chars?: number;
+            learning_event?: { title?: string };
+            concepts?: string[];
+            checklist?: string[];
+            interactive_story?: { title?: string; opening?: string };
+            final_storytelling?: string;
+            llm_used?: boolean;
+            llm_status?: string;
           };
           return { file, ok: response.ok, data };
         })
@@ -139,8 +158,24 @@ export function VercelV0Chat() {
             : `Upload failed: ${failed[0].data.error ?? failedNames}`
         );
       } else {
+        const mapped = succeeded.map((r) => ({
+          filename: r.data.filename ?? r.file.name,
+          storyText: r.data.final_storytelling ?? "",
+          llmUsed: Boolean(r.data.llm_used),
+          llmStatus: r.data.llm_status ?? "",
+          concepts: r.data.concepts ?? [],
+          checklist: r.data.checklist ?? [],
+          storyTitle: r.data.interactive_story?.title ?? "LastMinute Mission",
+          storyOpening: r.data.interactive_story?.opening ?? "",
+        }));
+        setLearningOutput(mapped);
+
         const summary = succeeded
-          .map((r) => `${r.data.filename ?? r.file.name} (${r.data.chars ?? 0} chars)`)
+          .map((r) => {
+            const base = `${r.data.filename ?? r.file.name} (${r.data.chars ?? 0} chars)`;
+            const title = r.data.learning_event?.title;
+            return title ? `${base} -> ${title}` : base;
+          })
           .join("; ");
         setUploadStatus(
           succeeded.length === 1
@@ -285,6 +320,43 @@ export function VercelV0Chat() {
           <p className="mt-3 text-center text-xs text-muted-foreground">
             {uploadStatus}
           </p>
+        ) : null}
+        {learningOutput.length > 0 ? (
+          <div className="mt-4 space-y-3">
+            {learningOutput.map((item) => (
+              <div
+                key={item.filename}
+                className="rounded-xl border border-border bg-card p-4 text-sm text-foreground"
+              >
+                <p className="text-xs text-muted-foreground">{item.filename}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  {item.llmUsed ? "LLM-generated story" : "Fallback story (LLM unavailable)"}
+                </p>
+                {!item.llmUsed && item.llmStatus ? (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Reason: {item.llmStatus}
+                  </p>
+                ) : null}
+                {item.storyText ? (
+                  <p className="mt-2 whitespace-pre-line leading-6">{item.storyText}</p>
+                ) : null}
+                {!item.storyText ? <p className="mt-2 font-medium">{item.storyTitle}</p> : null}
+                {!item.storyText && item.storyOpening ? (
+                  <p className="mt-1 text-muted-foreground">{item.storyOpening}</p>
+                ) : null}
+                {item.concepts.length > 0 ? (
+                  <p className="mt-3 text-xs">Concepts: {item.concepts.join(", ")}</p>
+                ) : null}
+                {item.checklist.length > 0 ? (
+                  <ul className="mt-2 list-disc pl-4 text-xs">
+                    {item.checklist.slice(0, 4).map((task, idx) => (
+                      <li key={`${item.filename}-task-${idx}`}>{task}</li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ))}
+          </div>
         ) : null}
       </div>
     </div>

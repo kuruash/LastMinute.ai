@@ -12,6 +12,13 @@ interface LoaderResult {
   preview: string;
   /** Full extracted text (capped for very large docs to avoid huge responses) */
   text: string;
+  learningEvent: Record<string, unknown>;
+  concepts: string[];
+  checklist: string[];
+  interactiveStory: Record<string, unknown>;
+  finalStorytelling: string;
+  llmUsed: boolean;
+  llmStatus: string;
 }
 
 function parseLastJsonLine(stdout: string): Record<string, unknown> {
@@ -51,11 +58,70 @@ from agents.loaders.loader_factory import get_loader
 path = sys.argv[1]
 try:
     text = get_loader(path).load(path)
+    learning_event = {}
+    concepts = []
+    checklist = []
+    interactive_story = {}
+    final_storytelling = ""
+    llm_used = False
+    llm_status = ""
+    try:
+        from pipeline_graph import run_pipeline
+        pipeline_state = run_pipeline([path], extracted_text=text)
+        learning_event = pipeline_state.get("learning_event", {})
+        concepts = pipeline_state.get("priority_concepts", [])
+        checklist = pipeline_state.get("todo_checklist", [])
+        interactive_story = pipeline_state.get("interactive_story", {})
+        final_storytelling = pipeline_state.get("final_storytelling", "")
+        llm_used = bool(pipeline_state.get("llm_used", False))
+        llm_status = str(pipeline_state.get("llm_status", ""))
+    except Exception:
+        learning_event = {
+            "title": "mission: general review",
+            "format": "guided practice",
+            "tasks": ["read", "practice", "summarize"]
+        }
+        concepts = ["general", "review", "practice"]
+        checklist = ["read core sections", "practice key questions", "summarize notes"]
+        interactive_story = {
+            "title": "LastMinute Mission: General Review",
+            "opening": "Start from your most important chapter.",
+            "checkpoint": "Solve one mixed question.",
+            "boss_level": "Teach back without notes."
+        }
+        final_storytelling = """LastMinute Mission: General Review
+
+Act 1 - The Briefing:
+You have limited time, so focus on the biggest topics first.
+
+Act 2 - The Route:
+Use your uploaded notes to map key ideas and examples.
+
+Act 3 - The Checkpoint:
+Solve one mixed question without looking at notes.
+
+Final Boss:
+Teach the chapter in simple words from memory."""
+        llm_used = False
+        llm_status = "pipeline import/exec failed"
     # Cap at 100k chars so API response stays reasonable
     max_chars = 100000
     truncated = len(text) > max_chars
     out_text = text[:max_chars] if truncated else text
-    print(json.dumps({"ok": True, "chars": len(text), "preview": text[:200], "text": out_text, "truncated": truncated}))
+    print(json.dumps({
+        "ok": True,
+        "chars": len(text),
+        "preview": text[:200],
+        "text": out_text,
+        "truncated": truncated,
+        "learning_event": learning_event,
+        "concepts": concepts,
+        "checklist": checklist,
+        "interactive_story": interactive_story,
+        "final_storytelling": final_storytelling,
+        "llm_used": llm_used,
+        "llm_status": llm_status
+    }))
 except Exception as error:
     print(json.dumps({"ok": False, "error": str(error)}))
     sys.exit(1)
@@ -89,6 +155,20 @@ except Exception as error:
             chars: Number(payload.chars ?? 0),
             preview: String(payload.preview ?? ""),
             text: String(payload.text ?? ""),
+            learningEvent: (payload.learning_event ?? {}) as Record<string, unknown>,
+            concepts: Array.isArray(payload.concepts)
+              ? payload.concepts.map((item) => String(item))
+              : [],
+            checklist: Array.isArray(payload.checklist)
+              ? payload.checklist.map((item) => String(item))
+              : [],
+            interactiveStory: (payload.interactive_story ?? {}) as Record<
+              string,
+              unknown
+            >,
+            finalStorytelling: String(payload.final_storytelling ?? ""),
+            llmUsed: Boolean(payload.llm_used ?? false),
+            llmStatus: String(payload.llm_status ?? ""),
           });
           return;
         }
@@ -130,6 +210,13 @@ export async function POST(request: Request) {
       chars: result.chars,
       preview: result.preview,
       text: result.text,
+      learning_event: result.learningEvent,
+      concepts: result.concepts,
+      checklist: result.checklist,
+      interactive_story: result.interactiveStory,
+      final_storytelling: result.finalStorytelling,
+      llm_used: result.llmUsed,
+      llm_status: result.llmStatus,
       status: "processed",
     });
   } catch (error) {

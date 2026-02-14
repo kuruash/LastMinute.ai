@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ReactNode, KeyboardEvent } from "react";
+import type { ChangeEvent, ReactNode, KeyboardEvent } from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
@@ -67,10 +67,54 @@ function useAutoResizeTextarea({ minHeight, maxHeight }: UseAutoResizeTextareaPr
 
 export function VercelV0Chat() {
   const [value, setValue] = useState("");
+  const [uploadStatus, setUploadStatus] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
   const { textareaRef, adjustHeight } = useAutoResizeTextarea({
     minHeight: 60,
     maxHeight: 200,
   });
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const openFilePicker = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    setUploadStatus(`Uploading ${file.name}...`);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+      const data = (await response.json()) as {
+        error?: string;
+        filename?: string;
+        chars?: number;
+      };
+
+      if (!response.ok) {
+        setUploadStatus(data.error ?? "Upload failed.");
+        return;
+      }
+
+      setUploadStatus(
+        `Processed ${data.filename ?? file.name} (${data.chars ?? 0} chars).`
+      );
+    } catch {
+      setUploadStatus("Upload failed.");
+    } finally {
+      setIsUploading(false);
+      event.target.value = "";
+    }
+  };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -125,7 +169,9 @@ export function VercelV0Chat() {
           <div className="flex items-center justify-between px-3 pb-3">
             <button
               type="button"
-              className="group flex items-center gap-1.5 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground"
+              onClick={openFilePicker}
+              disabled={isUploading}
+              className="group flex items-center gap-1.5 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
             >
               <Paperclip className="h-4 w-4" />
               <span className="hidden text-xs group-hover:inline">Attach</span>
@@ -154,15 +200,31 @@ export function VercelV0Chat() {
               </button>
             </div>
           </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,.txt,.md,.pptx,.png,.jpg,.jpeg"
+            className="hidden"
+            onChange={handleUpload}
+          />
         </div>
 
         {/* Action chips */}
         <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-          <ActionButton icon={<FileUp className="h-3.5 w-3.5" />} label="Upload Syllabus" />
+          <ActionButton
+            icon={<FileUp className="h-3.5 w-3.5" />}
+            label="Upload Syllabus"
+            onClick={openFilePicker}
+          />
           <ActionButton icon={<BookOpen className="h-3.5 w-3.5" />} label="Study Materials" />
           <ActionButton icon={<Brain className="h-3.5 w-3.5" />} label="Practice Quiz" />
           <ActionButton icon={<Sparkles className="h-3.5 w-3.5" />} label="Start a Mission" href="/workspace" />
         </div>
+        {uploadStatus ? (
+          <p className="mt-3 text-center text-xs text-muted-foreground">
+            {uploadStatus}
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -176,9 +238,10 @@ interface ActionButtonProps {
   icon: ReactNode;
   label: string;
   href?: string;
+  onClick?: () => void;
 }
 
-function ActionButton({ icon, label, href }: ActionButtonProps) {
+function ActionButton({ icon, label, href, onClick }: ActionButtonProps) {
   const cls =
     "flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground";
 
@@ -192,7 +255,7 @@ function ActionButton({ icon, label, href }: ActionButtonProps) {
   }
 
   return (
-    <button type="button" className={cls}>
+    <button type="button" onClick={onClick} className={cls}>
       {icon}
       {label}
     </button>

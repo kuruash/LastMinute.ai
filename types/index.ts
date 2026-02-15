@@ -166,3 +166,10 @@ export interface QuizQuestion {
   correctIndex: number;
   explanation?: string;
 }
+
+export interface TopicCheckpointQuiz {
+  mcqs: QuizQuestion[];
+  openQuestion: string;
+  openModelAnswer?: string;
+  focusConcept?: string;
+}

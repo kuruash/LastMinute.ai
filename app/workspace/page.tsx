@@ -14,6 +14,8 @@ import type {
   ChecklistItem,
   HintLevel,
   MisconceptionLogEntry,
+  QuizQuestion,
+  TopicCheckpointQuiz,
   TopicStorylineCard,
 } from "@/types";
 import type { StoryBeat } from "@/app/api/upload/route";
@@ -30,6 +32,73 @@ interface RecentSessionItem {
   id: string;
   title: string;
   updatedAt: number;
+}
+
+interface TopicQuizAttempt {
+  mcqSelections: (number | null)[];
+  mcqChecked: boolean[];
+  mcqCorrect: boolean[];
+  openAnswer: string;
+  openSubmitted: boolean;
+  openPassed: boolean;
+  openFeedback: string;
+}
+
+function defaultTopicQuizAttempt(questionCount: number): TopicQuizAttempt {
+  return {
+    mcqSelections: Array.from({ length: questionCount }, () => null),
+    mcqChecked: Array.from({ length: questionCount }, () => false),
+    mcqCorrect: Array.from({ length: questionCount }, () => false),
+    openAnswer: "",
+    openSubmitted: false,
+    openPassed: false,
+    openFeedback: "",
+  };
+}
+
+function buildFallbackTopicQuiz(card: TopicStorylineCard): TopicCheckpointQuiz {
+  const lead = card.topics[0] || card.subtopics[0] || card.title || "this topic";
+  const second = card.topics[1] || card.subtopics[1] || lead;
+  const mcqs: QuizQuestion[] = [
+    {
+      question: `Which idea is most central in this topic: ${lead}?`,
+      options: [
+        `${lead} is the core concept that should anchor your explanation.`,
+        `${second} fully replaces ${lead} in every case.`,
+        "You should ignore both and memorize random examples.",
+        "The best approach is to skip concept links entirely.",
+      ],
+      correctIndex: 0,
+      explanation: `Start from ${lead}, then connect to supporting concepts like ${second}.`,
+    },
+    {
+      question: `What is the best exam strategy when a question mixes ${lead} and ${second}?`,
+      options: [
+        `Start with ${lead}, then map it to ${second} step by step.`,
+        "Write the final answer first and skip reasoning.",
+        "Only define one term and stop there.",
+        "Use unrelated formulas to save time.",
+      ],
+      correctIndex: 0,
+      explanation: `Explain the logic chain from ${lead} to ${second} clearly for full marks.`,
+    },
+  ];
+
+  return {
+    mcqs,
+    openQuestion: `In 2-4 lines, explain how you would solve a question using ${lead}${second !== lead ? ` and ${second}` : ""}.`,
+    openModelAnswer: `Start from ${lead}, connect it to ${second}, and state the reasoning that leads to the result.`,
+    focusConcept: lead,
+  };
+}
+
+function checklistLabelFromCard(card: TopicStorylineCard, index: number): string {
+  const preferred = card.subtopics[0] || card.topics[0] || card.title || `Subtopic ${index + 1}`;
+  const cleaned = preferred
+    .replace(/^explanation\s*[-—:]\s*/i, "")
+    .replace(/^story\s*card\s*\d+\s*[-—:]\s*/i, "")
+    .trim();
+  return cleaned || `Subtopic ${index + 1}`;
 }
 
 export default function WorkspacePage() {
@@ -52,6 +121,17 @@ export default function WorkspacePage() {
     []
   );
   const [storyBeats, setStoryBeats] = useState<StoryBeat[]>([]);
+  const [topicQuizzes, setTopicQuizzes] = useState<Record<number, TopicCheckpointQuiz>>(
+    {}
+  );
+  const [quizAttempts, setQuizAttempts] = useState<Record<number, TopicQuizAttempt>>(
+    {}
+  );
+  const [quizLoadingTopics, setQuizLoadingTopics] = useState<Record<number, boolean>>(
+    {}
+  );
+  const [quizPageTopicIndex, setQuizPageTopicIndex] = useState<number | null>(null);
+  const [skippedQuizTopics, setSkippedQuizTopics] = useState<Record<number, boolean>>({});
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [recentChats, setRecentChats] = useState<RecentSessionItem[]>([]);
 
@@ -59,8 +139,8 @@ export default function WorkspacePage() {
   const annotationStore = useCreateAnnotationStore();
   const [voxiOpenTrigger, setVoxiOpenTrigger] = useState(0);
   const [voxiIsOpen, setVoxiIsOpen] = useState(false);
+  const [lessonVoiceListening, setLessonVoiceListening] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
-  const [quizOpen, setQuizOpen] = useState(false);
   const lessonColumnRef = useRef<HTMLDivElement>(null);
 
   /* ---- resizable right panel (Voxi + checklist) ---- */
@@ -92,7 +172,7 @@ export default function WorkspacePage() {
 
   useWakeWord({
     onWake: handleWakeWord,
-    disabled: voxiIsOpen,
+    disabled: voxiIsOpen || lessonVoiceListening,
   });
 
   const readRecentSessions = useCallback((): RecentSessionItem[] => {
@@ -157,6 +237,11 @@ export default function WorkspacePage() {
       setStorytelling("");
       setStoryTitle("Mission Story");
       setTopicStorylines([]);
+      setTopicQuizzes({});
+      setQuizAttempts({});
+      setQuizLoadingTopics({});
+      setQuizPageTopicIndex(null);
+      setSkippedQuizTopics({});
       setActiveTopicId(null);
       setLoadState("ready");
       return;
@@ -177,28 +262,6 @@ export default function WorkspacePage() {
         const session = await sessionRes.json();
         if (cancelled) return;
 
-        const sessionChecklist = Array.isArray(session.checklist)
-          ? session.checklist
-              .map((item: unknown) => String(item).trim())
-              .filter((item: string) => item.length > 0)
-          : [];
-        const fallbackChecklist = Array.isArray(session.concepts)
-          ? session.concepts
-              .map((item: unknown) => String(item).trim())
-              .filter((item: string) => item.length > 0)
-              .slice(0, 6)
-          : [];
-        const checklistItems = (
-          sessionChecklist.length > 0 ? sessionChecklist : fallbackChecklist
-        )
-          .slice(0, 10)
-          .map((label: string, idx: number) => ({
-            id: `subtopic-${idx}`,
-            label,
-            done: false,
-          }));
-        setChecklist(checklistItems);
-
         const storytellingText =
           typeof session.final_storytelling === "string"
             ? session.final_storytelling
@@ -210,7 +273,7 @@ export default function WorkspacePage() {
             ? session.interactive_story.title.trim()
             : "Mission Story"
         );
-        const cards = Array.isArray(session.interactive_story?.topic_storylines)
+        const cards: TopicStorylineCard[] = Array.isArray(session.interactive_story?.topic_storylines)
           ? session.interactive_story.topic_storylines
               .filter(
                 (item: unknown) => !!item && typeof item === "object"
@@ -233,7 +296,39 @@ export default function WorkspacePage() {
               }))
               .filter((item: TopicStorylineCard) => item.story.length > 0)
           : [];
+
+        const sessionChecklist = Array.isArray(session.checklist)
+          ? session.checklist
+              .map((item: unknown) => String(item).trim())
+              .filter((item: string) => item.length > 0)
+          : [];
+        const fallbackChecklist = Array.isArray(session.concepts)
+          ? session.concepts
+              .map((item: unknown) => String(item).trim())
+              .filter((item: string) => item.length > 0)
+          : [];
+        const checklistItems =
+          cards.length > 0
+            ? cards.map((card, idx) => ({
+                id: `subtopic-${idx}`,
+                label: checklistLabelFromCard(card, idx),
+                done: false,
+              }))
+            : (sessionChecklist.length > 0 ? sessionChecklist : fallbackChecklist)
+                .slice(0, 6)
+                .map((label: string, idx: number) => ({
+                  id: `subtopic-${idx}`,
+                  label,
+                  done: false,
+                }));
+        setChecklist(checklistItems);
+
         setTopicStorylines(cards);
+        setTopicQuizzes({});
+        setQuizAttempts({});
+        setQuizLoadingTopics({});
+        setQuizPageTopicIndex(null);
+        setSkippedQuizTopics({});
         setStoryBeats(Array.isArray(session.story_beats) ? session.story_beats : []);
         setActiveTopicId(cards[0] ? `story-${0}` : null);
         upsertRecentSession({
@@ -327,6 +422,11 @@ export default function WorkspacePage() {
         setStorytelling("");
         setStoryTitle("Mission Story");
         setTopicStorylines([]);
+        setTopicQuizzes({});
+        setQuizAttempts({});
+        setQuizLoadingTopics({});
+        setQuizPageTopicIndex(null);
+        setSkippedQuizTopics({});
         setActiveTopicId(null);
         setLoadState("ready");
         router.push("/workspace");
@@ -344,6 +444,11 @@ export default function WorkspacePage() {
     setStorytelling("");
     setStoryTitle("Mission Story");
     setTopicStorylines([]);
+    setTopicQuizzes({});
+    setQuizAttempts({});
+    setQuizLoadingTopics({});
+    setQuizPageTopicIndex(null);
+    setSkippedQuizTopics({});
     setActiveTopicId(null);
     setLoadState("ready");
     router.push("/workspace");
@@ -357,6 +462,11 @@ export default function WorkspacePage() {
     setStorytelling("");
     setStoryTitle("Mission Story");
     setTopicStorylines([]);
+    setTopicQuizzes({});
+    setQuizAttempts({});
+    setQuizLoadingTopics({});
+    setQuizPageTopicIndex(null);
+    setSkippedQuizTopics({});
     setActiveTopicId(null);
     setLoadState("ready");
     router.push("/workspace");
@@ -372,25 +482,126 @@ export default function WorkspacePage() {
     parsedStoryIndex < topicStorylines.length
       ? parsedStoryIndex
       : 0;
-  const canGoPrevStory = currentStoryIndex > 0;
-  const canGoNextStory = currentStoryIndex < topicStorylines.length - 1;
+  const currentTopicQuiz = topicQuizzes[currentStoryIndex];
+  const currentQuizAttempt = quizAttempts[currentStoryIndex];
+  const mcqCount = currentTopicQuiz?.mcqs?.length ?? 0;
+  const mcqsPassed =
+    mcqCount > 0 &&
+    currentQuizAttempt?.mcqCorrect?.slice(0, mcqCount).every(Boolean) === true;
+  const currentTopicPassed =
+    mcqsPassed && Boolean(currentQuizAttempt?.openSubmitted && currentQuizAttempt?.openPassed);
+  const showQuizPage = quizPageTopicIndex === currentStoryIndex;
+  const currentTopicSkipped = Boolean(skippedQuizTopics[currentStoryIndex]);
+  const canAdvanceFromQuizPage = currentTopicPassed || currentTopicSkipped;
+  const canGoPrevStory = showQuizPage ? true : currentStoryIndex > 0;
+  const canGoNextStory = showQuizPage
+    ? currentStoryIndex < topicStorylines.length - 1 && canAdvanceFromQuizPage
+    : topicStorylines.length > 0;
 
-  /** Full context for quiz generation: tutor context + all topic storylines (title, topics, story, etc.) */
-  const quizContext = useMemo(() => {
-    const parts: string[] = [tutorContext];
-    topicStorylines.forEach((card, i) => {
-      parts.push(
-        `--- Topic ${i + 1}: ${card.title ?? "Untitled"} ---`,
-        `Topics: ${(card.topics ?? []).join(", ")}`,
-        `Subtopics: ${(card.subtopics ?? []).join(", ")}`,
-        card.story ?? "",
-        (card.friend_explainers ?? []).length > 0
-          ? `Friend explainers: ${card.friend_explainers!.join(" ")}`
-          : ""
-      );
+  const ensureTopicQuiz = useCallback(
+    async (topicIdx: number) => {
+      if (
+        topicIdx < 0 ||
+        topicIdx >= topicStorylines.length ||
+        topicQuizzes[topicIdx] ||
+        quizLoadingTopics[topicIdx]
+      ) {
+        return;
+      }
+
+      const card = topicStorylines[topicIdx];
+      if (!card) return;
+
+      setQuizLoadingTopics((prev) => ({ ...prev, [topicIdx]: true }));
+      try {
+        const topicContext = [
+          tutorContext,
+          `Topic: ${card.title}`,
+          `Concepts: ${(card.topics || []).join(", ")}`,
+          `Subtopics: ${(card.subtopics || []).join(", ")}`,
+          card.story || "",
+          Array.isArray(card.friend_explainers) ? card.friend_explainers.join("\n") : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+
+        const response = await fetch("/api/quiz/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            context: topicContext,
+            difficulty: "medium",
+            numQuestions: 2,
+          }),
+        });
+
+        let quiz: TopicCheckpointQuiz | null = null;
+        if (response.ok) {
+          const data = await response.json();
+          const generated = Array.isArray(data?.questions)
+            ? (data.questions as QuizQuestion[]).slice(0, 2)
+            : [];
+          if (generated.length === 2) {
+            const lead = card.topics[0] || card.subtopics[0] || card.title || "this topic";
+            quiz = {
+              mcqs: generated,
+              openQuestion: `In 2-4 lines, explain how you would apply ${lead} in an exam answer.`,
+              openModelAnswer: `Define ${lead}, connect it to the problem setup, and explain the reasoning chain to your conclusion.`,
+              focusConcept: lead,
+            };
+          }
+        }
+
+        if (!quiz) {
+          quiz = buildFallbackTopicQuiz(card);
+        }
+
+        setTopicQuizzes((prev) => ({ ...prev, [topicIdx]: quiz! }));
+        setQuizAttempts((prev) =>
+          prev[topicIdx]
+            ? prev
+            : {
+                ...prev,
+                [topicIdx]: defaultTopicQuizAttempt(quiz!.mcqs.length),
+              }
+        );
+      } catch {
+        const fallback = buildFallbackTopicQuiz(card);
+        setTopicQuizzes((prev) => ({ ...prev, [topicIdx]: fallback }));
+        setQuizAttempts((prev) =>
+          prev[topicIdx]
+            ? prev
+            : {
+                ...prev,
+                [topicIdx]: defaultTopicQuizAttempt(fallback.mcqs.length),
+              }
+        );
+      } finally {
+        setQuizLoadingTopics((prev) => ({ ...prev, [topicIdx]: false }));
+      }
+    },
+    [topicQuizzes, quizLoadingTopics, topicStorylines, tutorContext]
+  );
+
+  useEffect(() => {
+    if (topicStorylines.length === 0) return;
+    void ensureTopicQuiz(currentStoryIndex);
+  }, [currentStoryIndex, topicStorylines.length, ensureTopicQuiz]);
+
+  useEffect(() => {
+    if (!currentTopicPassed) return;
+    setSkippedQuizTopics((prev) => {
+      if (!prev[currentStoryIndex]) return prev;
+      const next = { ...prev };
+      delete next[currentStoryIndex];
+      return next;
     });
-    return parts.filter(Boolean).join("\n\n");
-  }, [tutorContext, topicStorylines]);
+    setChecklist((items) =>
+      items.map((item, idx) =>
+        idx === currentStoryIndex ? { ...item, done: true } : item
+      )
+    );
+  }, [currentTopicPassed, currentStoryIndex]);
 
   /** Current slide image for Voxi "Draw on slide" (first image of current topic) */
   const currentSlideImage = useMemo(() => {
@@ -413,7 +624,139 @@ export default function WorkspacePage() {
     };
   }, [topicStorylines, currentStoryIndex, storyBeats]);
 
+  const handleMcqSelect = useCallback(
+    (topicIdx: number, questionIdx: number, optionIdx: number) => {
+      const topicQuiz = topicQuizzes[topicIdx];
+      const questionCount = topicQuiz?.mcqs.length ?? 2;
+      setQuizAttempts((prev) => {
+        const base = prev[topicIdx] ?? defaultTopicQuizAttempt(questionCount);
+        const nextSelections = [...base.mcqSelections];
+        nextSelections[questionIdx] = optionIdx;
+        const nextChecked = [...base.mcqChecked];
+        nextChecked[questionIdx] = false;
+        return {
+          ...prev,
+          [topicIdx]: {
+            ...base,
+            mcqSelections: nextSelections,
+            mcqChecked: nextChecked,
+          },
+        };
+      });
+    },
+    [topicQuizzes]
+  );
+
+  const handleMcqCheck = useCallback(
+    (topicIdx: number, questionIdx: number) => {
+      const quiz = topicQuizzes[topicIdx];
+      if (!quiz || !quiz.mcqs[questionIdx]) return;
+      setQuizAttempts((prev) => {
+        const base = prev[topicIdx] ?? defaultTopicQuizAttempt(quiz.mcqs.length);
+        const selected = base.mcqSelections[questionIdx];
+        const isCorrect = selected === quiz.mcqs[questionIdx].correctIndex;
+        const checked = [...base.mcqChecked];
+        checked[questionIdx] = selected !== null;
+        const correct = [...base.mcqCorrect];
+        correct[questionIdx] = Boolean(isCorrect);
+        return {
+          ...prev,
+          [topicIdx]: {
+            ...base,
+            mcqChecked: checked,
+            mcqCorrect: correct,
+          },
+        };
+      });
+    },
+    [topicQuizzes]
+  );
+
+  const handleOpenAnswerChange = useCallback(
+    (topicIdx: number, value: string) => {
+      const quiz = topicQuizzes[topicIdx];
+      const questionCount = quiz?.mcqs.length ?? 2;
+      setQuizAttempts((prev) => {
+        const base = prev[topicIdx] ?? defaultTopicQuizAttempt(questionCount);
+        return {
+          ...prev,
+          [topicIdx]: {
+            ...base,
+            openAnswer: value,
+            openSubmitted: false,
+            openPassed: false,
+            openFeedback: "",
+          },
+        };
+      });
+    },
+    [topicQuizzes]
+  );
+
+  const handleOpenAnswerSubmit = useCallback(
+    (topicIdx: number) => {
+      const quiz = topicQuizzes[topicIdx];
+      const card = topicStorylines[topicIdx];
+      if (!quiz || !card) return;
+
+      setQuizAttempts((prev) => {
+        const base = prev[topicIdx] ?? defaultTopicQuizAttempt(quiz.mcqs.length);
+        const raw = base.openAnswer.trim();
+        if (!raw) return prev;
+
+        const normalized = raw.toLowerCase();
+        const words = normalized.replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+        const focus = (quiz.focusConcept || card.topics[0] || card.subtopics[0] || "").toLowerCase();
+        const model = (quiz.openModelAnswer || "").toLowerCase();
+
+        const keywordPool = [focus, model, ...card.topics, ...card.subtopics]
+          .join(" ")
+          .toLowerCase()
+          .replace(/[^a-z0-9\s]/g, " ")
+          .split(/\s+/)
+          .filter((token) => token.length >= 4);
+        const keywordSet = new Set(keywordPool);
+        const keywordHits = words.filter((token) => keywordSet.has(token)).length;
+        const hasReasoning = /because|therefore|first|next|finally|so that|which means/.test(
+          normalized
+        );
+        const longEnough = raw.length >= 40 || words.length >= 7;
+        const focusHit = focus.length > 0 && normalized.includes(focus);
+        const concisePass =
+          words.length > 0 &&
+          words.length <= 4 &&
+          words.some((token) => model.includes(token) || focus.includes(token));
+        const pass =
+          concisePass ||
+          (longEnough && (hasReasoning || keywordHits >= 2 || focusHit));
+
+        const feedback = pass
+          ? concisePass
+            ? "Good keyword-level answer. Add one reasoning sentence for full depth."
+            : "Great. Your explanation shows the concept and reasoning."
+          : quiz.openModelAnswer
+            ? `Remember: ${quiz.openModelAnswer}`
+            : "Remember: define the core concept, then explain the reasoning chain.";
+
+        return {
+          ...prev,
+          [topicIdx]: {
+            ...base,
+            openSubmitted: true,
+            openPassed: pass,
+            openFeedback: feedback,
+          },
+        };
+      });
+    },
+    [topicQuizzes, topicStorylines]
+  );
+
   const handlePrevStory = useCallback(() => {
+    if (showQuizPage) {
+      setQuizPageTopicIndex(null);
+      return;
+    }
     setActiveTopicId((prev) => {
       const idx =
         prev && prev.startsWith("story-")
@@ -422,24 +765,29 @@ export default function WorkspacePage() {
       const safeIdx = Number.isFinite(idx) ? idx : 0;
       return `story-${Math.max(0, safeIdx - 1)}`;
     });
-  }, []);
+  }, [showQuizPage]);
 
   const handleNextStory = useCallback(() => {
+    if (!showQuizPage) {
+      setQuizPageTopicIndex(currentStoryIndex);
+      return;
+    }
+    if (!canAdvanceFromQuizPage) return;
     setActiveTopicId((prev) => {
       const idx =
         prev && prev.startsWith("story-")
           ? Number.parseInt(prev.replace("story-", ""), 10)
           : 0;
       const safeIdx = Number.isFinite(idx) ? idx : 0;
-      setChecklist((items) =>
-        items.map((item, checklistIdx) =>
-          checklistIdx === safeIdx ? { ...item, done: true } : item
-        )
-      );
       const next = Math.min(topicStorylines.length - 1, safeIdx + 1);
       return `story-${Math.max(0, next)}`;
     });
-  }, [topicStorylines.length]);
+    setQuizPageTopicIndex(null);
+  }, [showQuizPage, currentStoryIndex, canAdvanceFromQuizPage, topicStorylines.length]);
+
+  const handleSkipQuiz = useCallback((topicIdx: number) => {
+    setSkippedQuizTopics((prev) => ({ ...prev, [topicIdx]: true }));
+  }, []);
 
   /* ---- loading ---- */
   if (loadState === "loading") {
@@ -472,7 +820,14 @@ export default function WorkspacePage() {
   }
 
   /* ---- workspace ---- */
-  const completedCount = checklist.filter((item) => item.done).length;
+  const completedCount = topicStorylines.reduce((acc, _, idx) => {
+    const quiz = topicQuizzes[idx];
+    const attempt = quizAttempts[idx];
+    if (!quiz || !attempt) return acc;
+    const mcqPassed = attempt.mcqCorrect.slice(0, quiz.mcqs.length).every(Boolean);
+    const openPassed = Boolean(attempt.openSubmitted && attempt.openPassed);
+    return acc + (mcqPassed && openPassed ? 1 : 0);
+  }, 0);
 
   return (
     <AnnotationStoreContext.Provider value={annotationStore}>
@@ -517,16 +872,29 @@ export default function WorkspacePage() {
                   activeTopicId={activeTopicId}
                   missionTitle={storyTitle}
                   missionStory={storytelling}
+                  tutorContext={tutorContext}
                   topicStorylines={topicStorylines}
                   storyBeats={storyBeats}
                   currentStoryIndex={currentStoryIndex}
                   totalStories={topicStorylines.length}
                   canGoPrevStory={canGoPrevStory}
                   canGoNextStory={canGoNextStory}
+                  showQuizPage={showQuizPage}
+                  canAdvanceFromQuizPage={canAdvanceFromQuizPage}
+                  currentTopicPassed={currentTopicPassed}
+                  requireQuizToAdvance={Boolean(currentTopicQuiz)}
+                  topicQuiz={currentTopicQuiz ?? null}
+                  quizAttempt={currentQuizAttempt ?? null}
+                  quizLoading={Boolean(quizLoadingTopics[currentStoryIndex])}
                   onPrevStory={handlePrevStory}
                   onNextStory={handleNextStory}
+                  onMcqSelect={handleMcqSelect}
+                  onMcqCheck={handleMcqCheck}
+                  onOpenAnswerChange={handleOpenAnswerChange}
+                  onOpenAnswerSubmit={handleOpenAnswerSubmit}
+                  onSkipQuiz={handleSkipQuiz}
+                  onVoiceListeningChange={setLessonVoiceListening}
                   loading={false}
-                  onTakeQuiz={() => setQuizOpen(true)}
                 />
                 {drawMode && (
                   <TopicDrawingOverlay
@@ -562,9 +930,6 @@ export default function WorkspacePage() {
             currentSlideImage={currentSlideImage}
             drawMode={drawMode}
             onDrawModeChange={setDrawMode}
-            quizContext={quizContext}
-            quizOpen={quizOpen}
-            onQuizOpenChange={setQuizOpen}
             className="shrink-0"
             style={{ width: rightPanelWidth, minWidth: rightPanelWidth }}
           />

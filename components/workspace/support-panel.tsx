@@ -3,9 +3,8 @@
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import type { ChecklistItem, HintLevel, MisconceptionLogEntry } from "@/types";
-import { Check, MessageSquare, MessageCircle, Sparkles, Trophy } from "lucide-react";
+import { Check, MessageCircle, Sparkles, Telescope } from "lucide-react";
 import { TutorChat } from "@/components/workspace/tutor-chat";
-import { QuizPanel } from "@/components/workspace/quiz-panel";
 
 interface SupportPanelProps {
   checklist: ChecklistItem[];
@@ -16,11 +15,6 @@ interface SupportPanelProps {
   tutorContext: string;
   completedSteps: number;
   totalSteps: number;
-  /** Full context for quiz (tutor context + all topic storylines) */
-  quizContext?: string;
-  /** Quiz panel is open (controlled by parent so LessonView CTA can open it) */
-  quizOpen?: boolean;
-  onQuizOpenChange?: (open: boolean) => void;
   /** External trigger to open Voxi (e.g. from wake-word "Hey Voxi") */
   voxiOpenTrigger?: number;
   /** Callback so parent knows if Voxi is open (for disabling wake-word) */
@@ -48,16 +42,10 @@ export function SupportPanel({
   currentSlideImage,
   drawMode = false,
   onDrawModeChange,
-  quizContext = "",
-  quizOpen: quizOpenProp = false,
-  onQuizOpenChange,
   className,
   style,
 }: SupportPanelProps) {
   const [tutorOpen, setTutorOpen] = useState(false);
-  const [quizOpenLocal, setQuizOpenLocal] = useState(false);
-  const quizOpen = onQuizOpenChange ? quizOpenProp : quizOpenLocal;
-  const setQuizOpen = onQuizOpenChange ?? setQuizOpenLocal;
 
   // Open Voxi when wake-word fires (voxiOpenTrigger increments)
   useEffect(() => {
@@ -83,19 +71,8 @@ export function SupportPanel({
       )}
       style={style}
     >
-      {/* When Quiz is open: only quiz panel */}
-      {quizOpen && quizContext.trim() ? (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <QuizPanel
-            quizContext={quizContext}
-            onClose={() => setQuizOpen(false)}
-            className="min-h-0 flex-1"
-          />
-        </div>
-      ) : null}
-
-      {/* When Voxi is open: only chat. When closed: checklist + progress + Ask Voxi + Take Quiz. */}
-      {!tutorOpen && !quizOpen && (
+      {/* When Voxi is open: only chat. When closed: checklist + progress + controls. */}
+      {!tutorOpen && (
       <div className="flex-1 space-y-5 overflow-y-auto p-4">
         {/* Progress summary */}
         <section>
@@ -150,13 +127,12 @@ export function SupportPanel({
           </ul>
         </section>
 
-        {/* Ask tutor + Take quiz */}
+        {/* Ask tutor + Deep dive */}
         <section className="space-y-2">
           <button
             type="button"
             onClick={() => {
               setTutorOpen(true);
-              setQuizOpen(false);
               onVoxiOpenChange?.(true);
             }}
             className="flex w-full items-center gap-2 rounded-md border border-border px-3 py-2 text-xs text-foreground transition-colors hover:bg-muted"
@@ -167,14 +143,13 @@ export function SupportPanel({
           <button
             type="button"
             onClick={() => {
-              setQuizOpen(true);
-              setTutorOpen(false);
+              setTutorOpen(true);
+              onVoxiOpenChange?.(true);
             }}
-            disabled={!quizContext.trim()}
-            className="flex w-full items-center gap-2 rounded-md border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-800 transition-colors hover:bg-amber-500/20 disabled:opacity-50 dark:text-amber-200"
+            className="flex w-full items-center gap-2 rounded-md border border-indigo-500/60 bg-indigo-500/10 px-3 py-2 text-xs font-medium text-indigo-800 transition-colors hover:bg-indigo-500/20 dark:text-indigo-200"
           >
-            <Trophy className="h-3.5 w-3.5" />
-            Take a Quiz
+            <Telescope className="h-3.5 w-3.5" />
+            Deep Dive Topic
           </button>
         </section>
 
@@ -206,7 +181,7 @@ export function SupportPanel({
       <div
         className={cn(
           "min-h-0 overflow-hidden",
-          tutorOpen && !quizOpen ? "flex flex-1 flex-col" : "hidden"
+          tutorOpen ? "flex flex-1 flex-col" : "hidden"
         )}
       >
         <TutorChat

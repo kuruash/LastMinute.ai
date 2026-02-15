@@ -128,7 +128,11 @@ export function SupportPanel({
         <section>
           <button
             type="button"
-            onClick={() => setTutorOpen(!tutorOpen)}
+            onClick={() => {
+              const next = !tutorOpen;
+              setTutorOpen(next);
+              if (next) onVoxiOpenChange?.(true);
+            }}
             className={cn(
               "flex w-full items-center gap-2 rounded-md border px-3 py-2 text-xs transition-colors",
               tutorOpen
@@ -173,6 +177,7 @@ export function SupportPanel({
           onClose={() => setTutorOpen(false)}
           drawMode={drawMode}
           onDrawModeToggle={onDrawModeChange}
+          voxiOpenTrigger={voxiOpenTrigger ?? 0}
         />
       </div>
     </div>

@@ -39,10 +39,9 @@ export async function POST(request: Request) {
 
   // Build Gemini-compatible content array
   const systemInstruction = [
-    "You are a helpful, encouraging study tutor for a university student.",
-    "Keep answers concise (2-4 sentences) unless the student asks for detail.",
-    "Reference the study material context when relevant.",
-    "If the student seems confused, break the concept down step by step.",
+    "You are Voxi, a helpful, encouraging study tutor for a university student. Use simple, clear language and short sentences.",
+    "Keep answers concise (2–5 sentences) unless the student asks for more detail. Always give a COMPLETE answer: end with a full sentence and never truncate or stop mid-thought. Your reply is shown in a chat bubble as-is.",
+    "Reference the study material context when relevant. If the student seems confused, break the concept down step by step. A quick analogy (e.g. \"Think of X as...\") helps when it fits.",
     "Never give full exam answers — guide them to the answer instead.",
     context ? `\nStudy material context:\n${context.slice(0, 8000)}` : "",
   ]
@@ -63,7 +62,7 @@ export async function POST(request: Request) {
       body: JSON.stringify({
         system_instruction: { parts: [{ text: systemInstruction }] },
         contents,
-        generationConfig: { temperature: 0.4, maxOutputTokens: 1024 },
+        generationConfig: { temperature: 0.4, maxOutputTokens: 1536 },
       }),
     });
 

@@ -17,16 +17,25 @@ interface AnalyzeBody {
  * POST /api/analyze-image
  *
  * Accepts an annotated image (base64 data URL) and sends it to
- * Gemini's multimodal vision API for analysis/explanation.
+ * Gemini's multimodal vision API. The image must be the COMPOSITED
+ * image (original diagram + user's red/yellow marks on top) so the
+ * model sees exactly what the user circled—that is the "right context."
+ * The prompt instructs the model to explain only that marked section.
  */
 export async function POST(request: Request) {
   const body = (await request.json()) as AnalyzeBody;
   const { image, annotationType, alt, userMessage } = body;
 
+  const msg = (userMessage ?? "").trim();
   const wantsInDepth =
-    !!userMessage &&
+    !!msg &&
     /in\s*depth|in-depth|detailed|more\s*detail|tell\s*me\s*more|break\s*(it\s*)?down|expand|elaborate|deeper|thorough/i.test(
-      userMessage
+      msg
+    );
+  const wantsBrief =
+    !!msg &&
+    /brief(ly)?|short|quick|concise|in\s*short|summar(y|ize)|just\s*(the\s*)?basics|keep\s*it\s*short/i.test(
+      msg
     );
 
   if (!image || !image.startsWith("data:image")) {
@@ -56,32 +65,58 @@ export async function POST(request: Request) {
   const mimeType = match[1];
   const base64Data = match[2];
 
-  const action = annotationType || "highlighted parts of";
-  const imageLabel = alt || "an educational diagram";
-  const studentAsk = userMessage?.trim()
-    ? ` The student asked: "${userMessage.trim()}".`
-    : "";
+  const isCroppedRegion = annotationType === "cropped region";
+  const imageLabel = alt || "lesson content";
+  const studentAsk = msg ? ` The student asked: "${msg}".` : "";
 
-  const prompt = wantsInDepth
-    ? `A student is studying and has ${action} this image: "${imageLabel}".${studentAsk}
-The red pen marks and/or highlighted areas show what they want explained.
+  let prompt: string;
+  let maxTokens: number;
 
-Give an IN-DEPTH explanation. Include:
-1. What the marked area shows (labels, axes, curves, and what they mean).
-2. Step-by-step: how to read it and what each part represents.
-3. How this connects to the broader topic and why it matters.
-4. Any formulas, definitions, or key terms that apply—spell them out.
-5. A short practical takeaway or exam tip if relevant.
+  const styleRule =
+    "Use clear, simple language and short sentences. Speak directly to the student (use \"you\"). Name what you see (e.g. \"The circle shows...\", \"The formula below means...\").";
+  const noTruncate =
+    "IMPORTANT: Your reply must be complete. Always end with a full sentence. Never stop mid-sentence or mid-word—the student will see exactly what you output in a chat bubble.";
 
-Use clear paragraphs. Be thorough and educational; the student asked for depth. Speak directly to the student (use "you"). Aim for a full, detailed explanation (several paragraphs if needed).`
-    : `A student is studying and has ${action} this image: "${imageLabel}".${studentAsk}
-The red pen marks and/or highlighted areas show what they want explained.
+  if (isCroppedRegion) {
+    const cropIntro =
+      "This image is the EXACT region a student selected (we cropped to only what they drew around). Explain this image clearly so they understand it.";
+    if (wantsBrief) {
+      maxTokens = 1024;
+      prompt = `${cropIntro}${studentAsk}
 
-Instructions:
-1. Focus on the ANNOTATED (marked/highlighted) area specifically.
-2. Explain what that part shows—labels, terms, and relationships.
-3. How does it relate to the overall concept?
-4. Give a clear, helpful explanation (one or two short paragraphs). Speak directly to the student (use "you").`;
+Structure your reply: (1) In one sentence, what is this diagram or content about? (2) In 1–2 sentences, what do the main parts or labels mean? (3) End with one clear takeaway or the formula in words.
+${styleRule}
+${noTruncate}`;
+    } else if (wantsInDepth) {
+      maxTokens = 3072;
+      prompt = `${cropIntro}${studentAsk}
+
+Structure your reply: (1) What does this image show overall? (2) Walk through each part (labels, segments, formula) and what it means. (3) How does it connect to the topic? (4) Key formula or definition. (5) A short takeaway. Use 2–4 short paragraphs. End with a closing sentence.
+${styleRule}
+${noTruncate}`;
+    } else {
+      maxTokens = 1024;
+      prompt = `${cropIntro}${studentAsk}
+
+Structure your reply: (1) What is this (diagram, formula, table)? (2) What do the main elements mean—name them (e.g. \"The large segment is...\", \"The equation says...\")? (3) One-sentence takeaway. Use complete sentences only. End with a full concluding sentence.
+${styleRule}
+${noTruncate}`;
+    }
+  } else {
+    const action = annotationType || "highlighted parts of";
+    const scopeRule =
+      "Explain ONLY the content inside or indicated by the red pen marks. Do not explain the rest of the image.";
+    if (wantsBrief) {
+      maxTokens = 1024;
+      prompt = `A student has ${action} this image: "${imageLabel}".${studentAsk} ${scopeRule} Give a brief explanation: (1) what this part shows, (2) what the main elements mean, (3) one takeaway. Use 2–4 complete sentences. ${styleRule} ${noTruncate}`;
+    } else if (wantsInDepth) {
+      maxTokens = 3072;
+      prompt = `A student has ${action} this image: "${imageLabel}".${studentAsk} ${scopeRule} Give an in-depth explanation: name each part, what it means, how it fits the topic, and a takeaway. Use 2–4 short paragraphs. End with a closing sentence. ${styleRule} ${noTruncate}`;
+    } else {
+      maxTokens = 1024;
+      prompt = `A student has ${action} this image: "${imageLabel}".${studentAsk} ${scopeRule} Explain clearly: (1) what this part is, (2) what the elements/labels mean, (3) one-sentence takeaway. Use complete sentences. End with a full concluding sentence. ${styleRule} ${noTruncate}`;
+    }
+  }
 
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -107,7 +142,7 @@ Instructions:
         ],
         generationConfig: {
           temperature: 0.3,
-          maxOutputTokens: wantsInDepth ? 2048 : 1024,
+          maxOutputTokens: maxTokens,
         },
       }),
     });

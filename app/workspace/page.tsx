@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { TopicNav } from "@/components/workspace/topic-nav";
 import { LessonView } from "@/components/workspace/lesson-view";
@@ -60,6 +60,7 @@ export default function WorkspacePage() {
   const [voxiOpenTrigger, setVoxiOpenTrigger] = useState(0);
   const [voxiIsOpen, setVoxiIsOpen] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
+  const lessonColumnRef = useRef<HTMLDivElement>(null);
 
   /* ---- resizable right panel (Voxi + checklist) ---- */
   const [rightPanelWidth, setRightPanelWidth] = useState(320);
@@ -488,7 +489,10 @@ export default function WorkspacePage() {
               onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
             />
           </div>
-          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+          <div
+            ref={lessonColumnRef}
+            className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+          >
             {sessionId ? (
               <>
                 <LessonView
@@ -507,6 +511,7 @@ export default function WorkspacePage() {
                 />
                 {drawMode && (
                   <TopicDrawingOverlay
+                    captureContainerRef={lessonColumnRef}
                     currentSlideImage={currentSlideImage}
                     onExit={() => setDrawMode(false)}
                   />

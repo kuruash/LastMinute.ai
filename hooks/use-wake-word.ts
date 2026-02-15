@@ -25,7 +25,7 @@ function getSRClass(): (new () => any) | null {
 }
 
 const WAKE_PHRASES = [
-  "hey voxi", "hey voxy", "hey roxy", "a voxi", "hey foxy", "hey boxy",
+  "hey voxi", "hey voxie", "hey voxy", "hey roxy", "a voxi", "hey foxy", "hey boxy",
   "hey vozy", "hey vaxi", "ok voxi", "okay voxi",
 ];
 const ROLLING_SIZE = 5; // check last N results together (speech often splits "hey voxi")

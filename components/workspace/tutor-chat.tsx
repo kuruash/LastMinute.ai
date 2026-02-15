@@ -48,9 +48,11 @@ interface TutorChatProps {
   /** Topic draw mode: draw anywhere on the lesson */
   drawMode?: boolean;
   onDrawModeToggle?: () => void;
+  /** Increments when "Hey Voxi" is detected; when it changes and panel is open, start mic */
+  voxiOpenTrigger?: number;
 }
 
-export function TutorChat({ context, open, onClose, drawMode = false, onDrawModeToggle }: TutorChatProps) {
+export function TutorChat({ context, open, onClose, drawMode = false, onDrawModeToggle, voxiOpenTrigger = 0 }: TutorChatProps) {
   /* ---- core state ---- */
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -113,6 +115,20 @@ export function TutorChat({ context, open, onClose, drawMode = false, onDrawMode
   useEffect(() => {
     if (open) inputRef.current?.focus();
   }, [open]);
+
+  /* ---- "Hey Voxi" opened the panel → start mic after a short delay so wake-word listener can release ---- */
+  const lastWakeTriggerRef = useRef(0);
+  useEffect(() => {
+    if (!open || !sttSupported || voxiOpenTrigger <= lastWakeTriggerRef.current) return;
+    lastWakeTriggerRef.current = voxiOpenTrigger;
+    unlockAudio();
+    clearTranscript();
+    const t = setTimeout(() => {
+      startListening();
+      setAgentState("listening");
+    }, 350);
+    return () => clearTimeout(t);
+  }, [open, voxiOpenTrigger, sttSupported, unlockAudio, clearTranscript, startListening]);
 
   /* ---- sync listening → agentState ---- */
   useEffect(() => {

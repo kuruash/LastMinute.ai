@@ -28,9 +28,6 @@ interface LoaderResult {
   llmUsed: boolean;
   llmStatus: string;
   pipelineTrace: Array<Record<string, unknown>>;
-  /** After all 5 topics: in-depth Veo video prompt for lesson video */
-  lessonVideoPrompt?: string;
-  lessonVideoStatus?: string;
 }
 
 const UPLOAD_CACHE_DIR = path.join(process.cwd(), ".cache", "upload_results");
@@ -216,8 +213,6 @@ try:
     llm_status = ""
     pipeline_trace = []
     story_beats = []
-    lesson_video_prompt = ""
-    lesson_video_status = ""
     try:
         if debug_mode:
             from pipeline_graph import run_pipeline_with_trace
@@ -233,8 +228,6 @@ try:
         llm_used = bool(pipeline_state.get("llm_used", False))
         llm_status = str(pipeline_state.get("llm_status", ""))
         story_beats = pipeline_state.get("story_beats", [])
-        lesson_video_prompt = str(pipeline_state.get("lesson_video_prompt", "") or "")
-        lesson_video_status = str(pipeline_state.get("lesson_video_status", "") or "")
         if not isinstance(story_beats, list):
             story_beats = []
     except Exception:
@@ -285,9 +278,7 @@ Teach the chapter in simple words from memory."""
         "story_beats": story_beats,
         "llm_used": llm_used,
         "llm_status": llm_status,
-        "pipeline_trace": pipeline_trace,
-        "lesson_video_prompt": lesson_video_prompt,
-        "lesson_video_status": lesson_video_status
+        "pipeline_trace": pipeline_trace
     }))
 except Exception as error:
     print(json.dumps({"ok": False, "error": str(error)}))
@@ -369,8 +360,6 @@ except Exception as error:
             pipelineTrace: Array.isArray(payload.pipeline_trace)
               ? (payload.pipeline_trace as Array<Record<string, unknown>>)
               : [],
-            lessonVideoPrompt: String(payload.lesson_video_prompt ?? "").trim() || undefined,
-            lessonVideoStatus: String(payload.lesson_video_status ?? "").trim() || undefined,
           });
           return;
         }
@@ -417,8 +406,6 @@ export async function POST(request: Request) {
       llm_used: cached.llmUsed,
       llm_status: cached.llmStatus,
       pipeline_trace: cached.pipelineTrace,
-      lesson_video_prompt: cached.lessonVideoPrompt,
-      lesson_video_status: cached.lessonVideoStatus,
       status: "processed",
       cached: true,
     });
@@ -447,8 +434,6 @@ export async function POST(request: Request) {
       llm_used: result.llmUsed,
       llm_status: result.llmStatus,
       pipeline_trace: result.pipelineTrace,
-      lesson_video_prompt: result.lessonVideoPrompt,
-      lesson_video_status: result.lessonVideoStatus,
       status: "processed",
       cached: false,
     });

@@ -60,6 +60,7 @@ export default function WorkspacePage() {
   const [voxiOpenTrigger, setVoxiOpenTrigger] = useState(0);
   const [voxiIsOpen, setVoxiIsOpen] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
+  const [quizOpen, setQuizOpen] = useState(false);
   const lessonColumnRef = useRef<HTMLDivElement>(null);
 
   /* ---- resizable right panel (Voxi + checklist) ---- */
@@ -374,6 +375,23 @@ export default function WorkspacePage() {
   const canGoPrevStory = currentStoryIndex > 0;
   const canGoNextStory = currentStoryIndex < topicStorylines.length - 1;
 
+  /** Full context for quiz generation: tutor context + all topic storylines (title, topics, story, etc.) */
+  const quizContext = useMemo(() => {
+    const parts: string[] = [tutorContext];
+    topicStorylines.forEach((card, i) => {
+      parts.push(
+        `--- Topic ${i + 1}: ${card.title ?? "Untitled"} ---`,
+        `Topics: ${(card.topics ?? []).join(", ")}`,
+        `Subtopics: ${(card.subtopics ?? []).join(", ")}`,
+        card.story ?? "",
+        (card.friend_explainers ?? []).length > 0
+          ? `Friend explainers: ${card.friend_explainers!.join(" ")}`
+          : ""
+      );
+    });
+    return parts.filter(Boolean).join("\n\n");
+  }, [tutorContext, topicStorylines]);
+
   /** Current slide image for Voxi "Draw on slide" (first image of current topic) */
   const currentSlideImage = useMemo(() => {
     const card = topicStorylines[currentStoryIndex];
@@ -508,6 +526,7 @@ export default function WorkspacePage() {
                   onPrevStory={handlePrevStory}
                   onNextStory={handleNextStory}
                   loading={false}
+                  onTakeQuiz={() => setQuizOpen(true)}
                 />
                 {drawMode && (
                   <TopicDrawingOverlay
@@ -543,6 +562,9 @@ export default function WorkspacePage() {
             currentSlideImage={currentSlideImage}
             drawMode={drawMode}
             onDrawModeChange={setDrawMode}
+            quizContext={quizContext}
+            quizOpen={quizOpen}
+            onQuizOpenChange={setQuizOpen}
             className="shrink-0"
             style={{ width: rightPanelWidth, minWidth: rightPanelWidth }}
           />

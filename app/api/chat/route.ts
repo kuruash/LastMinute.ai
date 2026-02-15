@@ -37,11 +37,21 @@ export async function POST(request: Request) {
 
   const model = process.env.LASTMINUTE_LLM_MODEL?.trim() || "gemini-2.0-flash";
 
-  // Build Gemini-compatible content array
+  const lastUser = messages.filter((m) => m.role === "user").pop()?.content ?? "";
+  const wantsInDepth =
+    /in\s*depth|in-depth|detailed|more\s*detail|tell\s*me\s*more|break\s*(it\s*)?down|expand|elaborate|deeper|thorough/i.test(
+      lastUser
+    );
+  const lengthHint = wantsInDepth
+    ? " The student asked for depth — give a fuller explanation (2–4 short paragraphs) with key points and one example."
+    : " DEFAULT: keep replies brief (2–4 sentences). Only go longer if they explicitly asked for in-depth or more detail.";
+
   const systemInstruction = [
     "You are Voxi, a helpful, encouraging study tutor for a university student. Use simple, clear language and short sentences.",
-    "Keep answers concise (2–5 sentences) unless the student asks for more detail. Always give a COMPLETE answer: end with a full sentence and never truncate or stop mid-thought. Your reply is shown in a chat bubble as-is.",
-    "Reference the study material context when relevant. If the student seems confused, break the concept down step by step. A quick analogy (e.g. \"Think of X as...\") helps when it fits.",
+    "Reply in PLAIN TEXT only: do not use markdown, asterisks (**), or other formatting. Your reply is shown in a chat bubble as-is.",
+    lengthHint,
+    "Always give a complete answer: end with a full sentence. Never truncate mid-thought.",
+    "Reference the study material context when relevant. A quick analogy (e.g. \"Think of X as...\") helps when it fits.",
     "Never give full exam answers — guide them to the answer instead.",
     context ? `\nStudy material context:\n${context.slice(0, 8000)}` : "",
   ]
@@ -62,7 +72,10 @@ export async function POST(request: Request) {
       body: JSON.stringify({
         system_instruction: { parts: [{ text: systemInstruction }] },
         contents,
-        generationConfig: { temperature: 0.4, maxOutputTokens: 1536 },
+        generationConfig: {
+          temperature: 0.4,
+          maxOutputTokens: wantsInDepth ? 1536 : 512,
+        },
       }),
     });
 
@@ -76,9 +89,10 @@ export async function POST(request: Request) {
     }
 
     const data = await res.json();
-    const text =
+    let text =
       data?.candidates?.[0]?.content?.parts?.[0]?.text ??
       "I'm not sure how to answer that. Can you rephrase?";
+    text = text.replace(/\*\*([^*]+)\*\*/g, "$1").trim();
 
     return NextResponse.json({ role: "assistant", content: text });
   } catch (error) {

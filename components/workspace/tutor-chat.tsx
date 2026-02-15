@@ -25,8 +25,10 @@ const SILENT_WAV =
 /** Keywords that mean "analyze what I highlighted on the image" */
 const ANALYZE_KEYWORDS = [
   "analyze", "analyse", "explain this", "explain me", "explain it",
+  "explain the", "explain in", "explain to me", "explain that", "explain",
   "what is this", "what's this", "highlighted", "tell me about this",
   "describe this", "break this down", "what does this mean",
+  "scenario", "this diagram", "this image", "this part", "that part",
 ];
 
 function isAnalyzeIntent(text: string): boolean {
@@ -401,7 +403,7 @@ export function TutorChat({ context, open, onClose, drawMode = false, onDrawMode
   };
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
         <div className="flex min-w-0 items-center gap-2">
           <span
@@ -448,8 +450,10 @@ export function TutorChat({ context, open, onClose, drawMode = false, onDrawMode
         </div>
       </div>
 
-      {/* ── Messages ── */}
-      <div className="flex-1 space-y-2.5 overflow-y-auto p-3">
+      {/* ── Messages: absolute inset so height is fixed and scroll always works ── */}
+      <div className="relative min-h-0 flex-1">
+        <div className="absolute inset-0 overflow-y-auto overflow-x-hidden p-3">
+          <div className="space-y-2.5">
         {messages.length === 0 && (
           <div className="flex flex-col items-center gap-3 py-6">
             <div
@@ -478,7 +482,9 @@ export function TutorChat({ context, open, onClose, drawMode = false, onDrawMode
                 : "mr-auto border border-border text-foreground"
             )}
           >
-            {msg.content}
+            {msg.role === "assistant"
+              ? msg.content.replace(/\*\*([^*]+)\*\*/g, "$1").trim()
+              : msg.content}
           </div>
         ))}
 
@@ -502,6 +508,8 @@ export function TutorChat({ context, open, onClose, drawMode = false, onDrawMode
         )}
 
         <div ref={bottomRef} />
+          </div>
+        </div>
       </div>
 
       {/* ── Stop speaking bar (only when speaking) ── */}

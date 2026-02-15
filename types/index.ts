@@ -155,3 +155,14 @@ export interface UploadResult {
   llm_used: boolean;
   llm_status: string;
 }
+
+/* ------------------------------------------------------------------
+   Quiz – generated from lesson/slides context
+   ------------------------------------------------------------------ */
+
+export interface QuizQuestion {
+  question: string;
+  options: string[];
+  correctIndex: number;
+  explanation?: string;
+}

@@ -1,9 +1,9 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState, useCallback } from "react";
 import type { TopicStorylineCard } from "@/types";
 import type { StoryBeat } from "@/app/api/upload/route";
-import { ChevronLeft, ChevronRight, Loader2, ImageIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Play, Square, Trophy } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface LessonViewProps {
@@ -19,6 +19,8 @@ interface LessonViewProps {
   onPrevStory: () => void;
   onNextStory: () => void;
   loading: boolean;
+  /** When on last topic, show "Take a Quiz" CTA; called when user clicks it */
+  onTakeQuiz?: () => void;
 }
 
 /** Try to find beat images relevant to this topic card's concepts */
@@ -42,54 +44,39 @@ function findBeatsForTopic(
   });
 }
 
-/** Render a single story beat with its images */
-function StoryBeatImages({ beat }: { beat: StoryBeat }) {
-  const images = beat.image_steps.filter((s) => s.image_data);
-  if (images.length === 0) return null;
+/** Collect up to 2 images from beats for this topic (for interleaving in the story) */
+function getTopicImages(beats: StoryBeat[]): Array<{ image_data: string; step_label: string }> {
+  const out: Array<{ image_data: string; step_label: string }> = [];
+  for (const beat of beats) {
+    for (const step of beat.image_steps) {
+      if (step.image_data?.trim()) {
+        out.push({
+          image_data: step.image_data,
+          step_label: step.step_label || beat.label,
+        });
+        if (out.length >= 2) return out;
+      }
+    }
+  }
+  return out;
+}
 
+/** Single visual block (one image + optional caption) — compact so images don’t dominate */
+function TopicVisual({ stepLabel, imageData }: { stepLabel: string; imageData: string }) {
   return (
-    <div className="mt-4 space-y-3">
-      <div className="flex items-center gap-2">
-        <ImageIcon className="h-3.5 w-3.5 text-muted-foreground" />
-        <p className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
-          Visual — {beat.label}
-        </p>
-      </div>
-      {beat.narrative && (
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          {beat.narrative}
+    <div className="my-5 max-w-4xl overflow-hidden rounded-lg border border-border bg-muted/20">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={imageData}
+        alt={stepLabel}
+        className="h-auto max-h-[480px] w-full object-contain"
+        draggable={false}
+      />
+      {stepLabel && (
+        <p className="border-t border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+          {stepLabel}
         </p>
       )}
-      <div
-        className={cn(
-          "grid gap-3",
-          images.length === 1
-            ? "grid-cols-1"
-            : images.length === 2
-              ? "grid-cols-2"
-              : "grid-cols-1 sm:grid-cols-3"
-        )}
-      >
-        {images.map((step, idx) => (
-          <div
-            key={`${beat.label}-step-${idx}`}
-            className="overflow-hidden rounded-lg border border-border bg-muted/20"
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={step.image_data}
-              alt={step.step_label || `${beat.label} diagram ${idx + 1}`}
-              className="h-auto w-full object-contain"
-              draggable={false}
-            />
-            {step.step_label && (
-              <p className="border-t border-border bg-muted/30 px-2.5 py-1.5 text-[10px] text-muted-foreground">
-                {step.step_label}
-              </p>
-            )}
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -107,8 +94,77 @@ export function LessonView({
   onPrevStory,
   onNextStory,
   loading,
+  onTakeQuiz,
 }: LessonViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const narrationAudioRef = useRef<HTMLAudioElement | null>(null);
+  const narrationUrlRef = useRef<string | null>(null);
+  const [narratingTopicIndex, setNarratingTopicIndex] = useState<number | null>(null);
+
+  const stopNarration = useCallback(() => {
+    const audio = narrationAudioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.onended = null;
+      audio.onerror = null;
+    }
+    if (narrationUrlRef.current) {
+      URL.revokeObjectURL(narrationUrlRef.current);
+      narrationUrlRef.current = null;
+    }
+    setNarratingTopicIndex(null);
+  }, []);
+
+  const playNarration = useCallback(async (card: TopicStorylineCard, topicIndex: number) => {
+    stopNarration();
+    const parts: string[] = [];
+    const title = (card.title || "").trim();
+    if (title) parts.push(title + ".");
+    const story = (card.story || "").trim();
+    if (story) parts.push(story);
+    const explainers = card.friend_explainers;
+    if (Array.isArray(explainers) && explainers.length > 0) {
+      parts.push("Key points. " + explainers.map((e) => String(e).trim()).filter(Boolean).join(" "));
+    }
+    const text = parts.join("\n\n").slice(0, 5000);
+    if (!text) return;
+    setNarratingTopicIndex(topicIndex);
+    try {
+      const resp = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!resp.ok) return;
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      narrationUrlRef.current = url;
+      let audio = narrationAudioRef.current;
+      if (!audio) {
+        audio = new Audio();
+        narrationAudioRef.current = audio;
+      }
+      audio.onended = stopNarration;
+      audio.onerror = stopNarration;
+      audio.src = url;
+      audio.volume = 1;
+      await audio.play();
+    } catch {
+      setNarratingTopicIndex(null);
+    }
+  }, [stopNarration]);
+
+  useEffect(() => {
+    return () => {
+      if (narrationUrlRef.current) URL.revokeObjectURL(narrationUrlRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    stopNarration();
+  }, [currentStoryIndex, stopNarration]);
+
   const cleanCardTitle = (rawTitle: string, fallback: string) => {
     const cleaned = rawTitle
       .replace(/^explanation\s*[-—:]\s*/i, "")
@@ -241,14 +297,43 @@ export function LessonView({
                       Explanation —{" "}
                       {cleanCardTitle(card.title || "", `Focus Area ${absoluteIdx + 1}`)}
                     </h3>
-                    <span
-                      className={cn(
-                        "rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
-                        importanceClass
-                      )}
-                    >
-                      {importance.toUpperCase()}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          narratingTopicIndex === absoluteIdx
+                            ? stopNarration()
+                            : playNarration(card, absoluteIdx)
+                        }
+                        className={cn(
+                          "flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] transition-colors",
+                          narratingTopicIndex === absoluteIdx
+                            ? "border-amber-500 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                            : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+                        )}
+                        title={narratingTopicIndex === absoluteIdx ? "Stop narration" : "Play story narration"}
+                      >
+                        {narratingTopicIndex === absoluteIdx ? (
+                          <>
+                            <Square className="h-3 w-3" />
+                            Stop
+                          </>
+                        ) : (
+                          <>
+                            <Play className="h-3 w-3" />
+                            Listen
+                          </>
+                        )}
+                      </button>
+                      <span
+                        className={cn(
+                          "rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                          importanceClass
+                        )}
+                      >
+                        {importance.toUpperCase()}
+                      </span>
+                    </div>
                   </div>
 
                   {card.topics.length > 0 && (
@@ -277,21 +362,79 @@ export function LessonView({
                     </ul>
                   )}
 
-                  <p className="mt-4 whitespace-pre-line text-sm leading-relaxed text-foreground">
-                    {card.story}
-                  </p>
-
-                  {/* ---- Story beat images for this topic ---- */}
-                  {currentBeats.length > 0 && (
-                    <div className="mt-5 space-y-4 border-t border-border pt-4">
-                      {currentBeats.map((beat, beatIdx) => (
-                        <StoryBeatImages
-                          key={`beat-${beat.label}-${beatIdx}`}
-                          beat={beat}
-                        />
-                      ))}
-                    </div>
-                  )}
+                  {/* Story with up to 2 images interleaved (after first paragraph, then after middle) */}
+                  {(() => {
+                    const rawParagraphs = (card.story || "")
+                      .split(/\n\n+/)
+                      .map((p) => p.trim())
+                      .filter(Boolean);
+                    const paragraphs: string[] = [];
+                    for (const p of rawParagraphs) {
+                      if (paragraphs[paragraphs.length - 1] !== p) paragraphs.push(p);
+                    }
+                    const topicImages = getTopicImages(currentBeats);
+                    if (paragraphs.length === 0) {
+                      return (
+                        topicImages.length > 0 && (
+                          <div className="mt-4 space-y-6">
+                            {topicImages.map((img, i) => (
+                              <TopicVisual
+                                key={i}
+                                stepLabel={img.step_label}
+                                imageData={img.image_data}
+                              />
+                            ))}
+                          </div>
+                        )
+                      );
+                    }
+                    const segments: Array<
+                      { type: "text"; content: string } | { type: "image"; step_label: string; image_data: string }
+                    > = [];
+                    let imgIdx = 0;
+                    paragraphs.forEach((p, i) => {
+                      segments.push({ type: "text", content: p });
+                      if (imgIdx === 0 && i === 0 && topicImages[0]) {
+                        segments.push({
+                          type: "image",
+                          step_label: topicImages[0].step_label,
+                          image_data: topicImages[0].image_data,
+                        });
+                        imgIdx = 1;
+                      } else if (
+                        imgIdx === 1 &&
+                        topicImages[1] &&
+                        (i === 1 || (paragraphs.length > 3 && i === 2))
+                      ) {
+                        segments.push({
+                          type: "image",
+                          step_label: topicImages[1].step_label,
+                          image_data: topicImages[1].image_data,
+                        });
+                        imgIdx = 2;
+                      }
+                    });
+                    return (
+                      <div className="mt-4 space-y-4">
+                        {segments.map((seg, i) =>
+                          seg.type === "text" ? (
+                            <p
+                              key={`p-${i}`}
+                              className="text-sm leading-relaxed text-foreground whitespace-pre-line"
+                            >
+                              {seg.content}
+                            </p>
+                          ) : (
+                            <TopicVisual
+                              key={`img-${i}`}
+                              stepLabel={seg.step_label}
+                              imageData={seg.image_data}
+                            />
+                          )
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {card.friend_explainers && card.friend_explainers.length > 0 && (
                     <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">
@@ -348,6 +491,24 @@ export function LessonView({
                 </button>
               </div>
             </div>
+            {!canGoNextStory && totalStories > 0 && onTakeQuiz && (
+              <div className="mt-6 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4">
+                <p className="mb-2 text-sm font-medium text-amber-900 dark:text-amber-100">
+                  You&apos;ve reached the end of the topics.
+                </p>
+                <p className="mb-3 text-xs text-amber-800/90 dark:text-amber-200/90">
+                  Test yourself with a quiz generated from your slides and material.
+                </p>
+                <button
+                  type="button"
+                  onClick={onTakeQuiz}
+                  className="flex items-center gap-2 rounded-md bg-amber-600 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-amber-700 dark:bg-amber-500 dark:hover:bg-amber-600"
+                >
+                  <Trophy className="h-4 w-4" />
+                  Take a Quiz
+                </button>
+              </div>
+            )}
           </section>
         ) : missionStory.trim() && (
           <section className="mb-8 rounded-lg border border-border bg-muted/30 p-5">

@@ -16,11 +16,10 @@ interface AnalyzeBody {
 /**
  * POST /api/analyze-image
  *
- * Accepts an annotated image (base64 data URL) and sends it to
- * Gemini's multimodal vision API. The image must be the COMPOSITED
- * image (original diagram + user's red/yellow marks on top) so the
- * model sees exactly what the user circled—that is the "right context."
- * The prompt instructs the model to explain only that marked section.
+ * Pipeline: When the user highlights an area with the pencil and asks Voxi to "explain this",
+ * the frontend sends the COMPOSITED image (screenshot with red pen marks) to this API.
+ * We send it to Google GEMINI (generativelanguage.googleapis.com), NOT OpenAI.
+ * The model must describe ONLY what is inside the marked area—no other context or filler.
  */
 export async function POST(request: Request) {
   const body = (await request.json()) as AnalyzeBody;
@@ -32,11 +31,8 @@ export async function POST(request: Request) {
     /in\s*depth|in-depth|detailed|more\s*detail|tell\s*me\s*more|break\s*(it\s*)?down|expand|elaborate|deeper|thorough/i.test(
       msg
     );
-  const wantsBrief =
-    !!msg &&
-    /brief(ly)?|short|quick|concise|in\s*short|summar(y|ize)|just\s*(the\s*)?basics|keep\s*it\s*short/i.test(
-      msg
-    );
+  // Default is brief; only use long reply when user explicitly asks for in-depth
+  const useBrief = !wantsInDepth;
 
   if (!image || !image.startsWith("data:image")) {
     return NextResponse.json({ error: "No valid image provided" }, { status: 400 });
@@ -72,49 +68,47 @@ export async function POST(request: Request) {
   let prompt: string;
   let maxTokens: number;
 
+  const strictRule =
+    "CRITICAL: Describe ONLY what is visible inside the marked/circled area. Do NOT use any context from outside the image. Do NOT add concepts, definitions, or topic knowledge that are not explicitly shown in the marked region. No filler—only what you see.";
   const styleRule =
-    "Use clear, simple language and short sentences. Speak directly to the student (use \"you\"). Name what you see (e.g. \"The circle shows...\", \"The formula below means...\").";
+    "Use clear, simple language. Speak directly to the student (\"you\"). Reply in PLAIN TEXT only: no markdown, no asterisks (**).";
   const noTruncate =
-    "IMPORTANT: Your reply must be complete. Always end with a full sentence. Never stop mid-sentence or mid-word—the student will see exactly what you output in a chat bubble.";
+    "End with a complete sentence. Never stop mid-sentence.";
 
   if (isCroppedRegion) {
     const cropIntro =
-      "This image is the EXACT region a student selected (we cropped to only what they drew around). Explain this image clearly so they understand it.";
-    if (wantsBrief) {
+      "This image is the EXACT region the student selected (cropped to only what they circled). Describe ONLY what is in this image. Do not add information from elsewhere.";
+    if (useBrief) {
       maxTokens = 1024;
       prompt = `${cropIntro}${studentAsk}
 
-Structure your reply: (1) In one sentence, what is this diagram or content about? (2) In 1–2 sentences, what do the main parts or labels mean? (3) End with one clear takeaway or the formula in words.
-${styleRule}
-${noTruncate}`;
-    } else if (wantsInDepth) {
+${strictRule}
+Reply: (1) One sentence—what is this? (2) 1–2 sentences on the main parts or labels you see. (3) One takeaway. ${styleRule} ${noTruncate}`;
+    } else {
       maxTokens = 3072;
       prompt = `${cropIntro}${studentAsk}
 
-Structure your reply: (1) What does this image show overall? (2) Walk through each part (labels, segments, formula) and what it means. (3) How does it connect to the topic? (4) Key formula or definition. (5) A short takeaway. Use 2–4 short paragraphs. End with a closing sentence.
-${styleRule}
-${noTruncate}`;
-    } else {
-      maxTokens = 1024;
-      prompt = `${cropIntro}${studentAsk}
-
-Structure your reply: (1) What is this (diagram, formula, table)? (2) What do the main elements mean—name them (e.g. \"The large segment is...\", \"The equation says...\")? (3) One-sentence takeaway. Use complete sentences only. End with a full concluding sentence.
-${styleRule}
-${noTruncate}`;
+${strictRule}
+Reply: (1) What does this image show? (2) Walk through each visible part/label. (3) One takeaway. Use 2–4 short paragraphs. Do not introduce topics not shown. ${styleRule} ${noTruncate}`;
     }
   } else {
     const action = annotationType || "highlighted parts of";
     const scopeRule =
-      "Explain ONLY the content inside or indicated by the red pen marks. Do not explain the rest of the image.";
-    if (wantsBrief) {
+      "The student drew red marks (circle/highlight) around one part of the image. You must describe ONLY the content that is inside or under those red marks. Ignore everything outside the marks. Do not explain the rest of the slide or add concepts not visible in the marked area.";
+    if (useBrief) {
       maxTokens = 1024;
-      prompt = `A student has ${action} this image: "${imageLabel}".${studentAsk} ${scopeRule} Give a brief explanation: (1) what this part shows, (2) what the main elements mean, (3) one takeaway. Use 2–4 complete sentences. ${styleRule} ${noTruncate}`;
-    } else if (wantsInDepth) {
-      maxTokens = 3072;
-      prompt = `A student has ${action} this image: "${imageLabel}".${studentAsk} ${scopeRule} Give an in-depth explanation: name each part, what it means, how it fits the topic, and a takeaway. Use 2–4 short paragraphs. End with a closing sentence. ${styleRule} ${noTruncate}`;
+      prompt = `A student has ${action} an image.${studentAsk}
+
+${scopeRule}
+${strictRule}
+Give a brief reply: (1) what this marked part shows, (2) what the elements/labels in the marked area mean, (3) one takeaway. 2–4 sentences only. ${styleRule} ${noTruncate}`;
     } else {
-      maxTokens = 1024;
-      prompt = `A student has ${action} this image: "${imageLabel}".${studentAsk} ${scopeRule} Explain clearly: (1) what this part is, (2) what the elements/labels mean, (3) one-sentence takeaway. Use complete sentences. End with a full concluding sentence. ${styleRule} ${noTruncate}`;
+      maxTokens = 3072;
+      prompt = `A student has ${action} an image.${studentAsk}
+
+${scopeRule}
+${strictRule}
+Give an in-depth reply only for the marked area: name each part you see in the marks, what it means. Do not add external context. 2–4 short paragraphs. ${styleRule} ${noTruncate}`;
     }
   }
 
@@ -157,9 +151,10 @@ ${noTruncate}`;
     }
 
     const data = await res.json();
-    const text =
+    let text =
       data?.candidates?.[0]?.content?.parts?.[0]?.text ??
       "Could not analyze the selected area. Try highlighting a different part.";
+    text = text.replace(/\*\*([^*]+)\*\*/g, "$1").trim();
 
     return NextResponse.json({ content: text });
   } catch (error) {

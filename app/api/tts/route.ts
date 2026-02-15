@@ -7,8 +7,11 @@ export const runtime = "nodejs";
 /*  Proxy to ElevenLabs TTS. Keeps the API key server-side.           */
 /* ------------------------------------------------------------------ */
 
-const DEFAULT_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb";
+/** Rachel: natural, clear premade voice (less robotic). Override with ELEVENLABS_VOICE_ID in .env */
+const DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM";
 const ELEVENLABS_API_URL = "https://api.elevenlabs.io/v1/text-to-speech";
+/** eleven_multilingual_v2 = more natural/expressive; eleven_turbo_v2_5 = faster but flatter */
+const DEFAULT_MODEL_ID = "eleven_multilingual_v2";
 
 interface TTSRequestBody {
   text: string;
@@ -33,6 +36,7 @@ export async function POST(request: Request) {
     }
 
     const voice = voiceId || process.env.ELEVENLABS_VOICE_ID || DEFAULT_VOICE_ID;
+    const modelId = process.env.ELEVENLABS_MODEL_ID?.trim() || DEFAULT_MODEL_ID;
 
     const elevenResp = await fetch(`${ELEVENLABS_API_URL}/${voice}`, {
       method: "POST",
@@ -43,11 +47,11 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify({
         text: text.slice(0, 5000),
-        model_id: "eleven_turbo_v2_5",
+        model_id: modelId,
         voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.75,
-          style: 0.3,
+          stability: 0.35,
+          similarity_boost: 0.8,
+          style: 0.4,
           use_speaker_boost: true,
         },
       }),

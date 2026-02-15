@@ -3,8 +3,9 @@
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import type { ChecklistItem, HintLevel, MisconceptionLogEntry } from "@/types";
-import { Check, MessageSquare, MessageCircle } from "lucide-react";
+import { Check, MessageSquare, MessageCircle, Sparkles } from "lucide-react";
 import { TutorChat } from "@/components/workspace/tutor-chat";
+import { useEffect } from "react";
 
 interface SupportPanelProps {
   checklist: ChecklistItem[];
@@ -15,6 +16,12 @@ interface SupportPanelProps {
   tutorContext: string;
   completedSteps: number;
   totalSteps: number;
+  /** External trigger to open Voxi (e.g. from wake-word "Hey Voxi") */
+  voxiOpenTrigger?: number;
+  /** Callback so parent knows if Voxi is open (for disabling wake-word) */
+  onVoxiOpenChange?: (open: boolean) => void;
+  className?: string;
+  style?: React.CSSProperties;
 }
 
 export function SupportPanel({
@@ -26,21 +33,36 @@ export function SupportPanel({
   tutorContext,
   completedSteps,
   totalSteps,
+  voxiOpenTrigger,
+  onVoxiOpenChange,
+  className,
+  style,
 }: SupportPanelProps) {
   const [tutorOpen, setTutorOpen] = useState(false);
+
+  // Open Voxi when wake-word fires (voxiOpenTrigger increments)
+  useEffect(() => {
+    if (voxiOpenTrigger && voxiOpenTrigger > 0) {
+      setTutorOpen(true);
+    }
+  }, [voxiOpenTrigger]);
+
+  // Notify parent of open state
+  useEffect(() => {
+    onVoxiOpenChange?.(tutorOpen);
+  }, [tutorOpen, onVoxiOpenChange]);
 
   const progressPercent =
     totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
 
   return (
-    <div className="flex h-full flex-col border-l border-border">
-      {/* Scrollable top section — shrinks when tutor is open */}
-      <div
-        className={cn(
-          "space-y-5 overflow-y-auto p-4 shrink-0",
-          tutorOpen ? "max-h-[40%]" : "flex-1"
-        )}
-      >
+    <div
+      className={cn("flex h-full flex-col border-l border-border", className)}
+      style={style}
+    >
+      {/* When Voxi is open: only chat. When closed: checklist + progress + Ask Voxi. */}
+      {!tutorOpen && (
+      <div className="flex-1 space-y-5 overflow-y-auto p-4">
         {/* Progress summary */}
         <section>
           <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -106,13 +128,13 @@ export function SupportPanel({
                 : "border-border text-foreground hover:bg-muted"
             )}
           >
-            <MessageSquare className="h-3.5 w-3.5" />
-            {tutorOpen ? "Close tutor" : "Ask tutor"}
+            <Sparkles className="h-3.5 w-3.5" />
+            {tutorOpen ? "Close Voxi" : "Ask Voxi"}
           </button>
         </section>
 
         {/* Misconceptions (only show when tutor closed) */}
-        {!tutorOpen && misconceptions.length > 0 && (
+        {misconceptions.length > 0 && (
           <section>
             <h3 className="mb-2 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
               Misconceptions
@@ -133,8 +155,9 @@ export function SupportPanel({
           </section>
         )}
       </div>
+      )}
 
-      {/* Tutor chat (takes remaining space, min-h-0 lets flex child scroll) */}
+      {/* Tutor chat: full height when open */}
       <div className={cn("min-h-0", tutorOpen ? "flex-1" : "hidden")}>
         <TutorChat
           context={tutorContext}

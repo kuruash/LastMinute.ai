@@ -13,12 +13,25 @@ import {
   X,
 } from "lucide-react";
 import { useVoiceInput } from "@/hooks/use-voice-input";
+import { useAnnotationStore } from "@/hooks/use-annotation-store";
 
 /* ------------------------------------------------------------------ */
 /*  Silent WAV to unlock Chrome autoplay on first user gesture         */
 /* ------------------------------------------------------------------ */
 const SILENT_WAV =
   "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+
+/** Keywords that mean "analyze what I highlighted on the image" */
+const ANALYZE_KEYWORDS = [
+  "analyze", "analyse", "explain this", "explain me", "explain it",
+  "what is this", "what's this", "highlighted", "tell me about this",
+  "describe this", "break this down", "what does this mean",
+];
+
+function isAnalyzeIntent(text: string): boolean {
+  const lower = text.toLowerCase();
+  return ANALYZE_KEYWORDS.some((kw) => lower.includes(kw));
+}
 
 type AgentState = "idle" | "listening" | "thinking" | "speaking";
 
@@ -52,6 +65,9 @@ export function TutorChat({ context, open, onClose }: TutorChatProps) {
     stopListening,
     clearTranscript,
   } = useVoiceInput();
+
+  /* ---- annotation store (for image analysis) ---- */
+  const annotationStore = useAnnotationStore();
 
   /* ---- refs: always-current values (never stale) ---- */
   const messagesRef = useRef(messages);
@@ -244,6 +260,51 @@ export function TutorChat({ context, open, onClose }: TutorChatProps) {
       setAgentState("thinking");
 
       try {
+        // Check if this is an analyze-image intent
+        if (isAnalyzeIntent(text)) {
+          const annotation = annotationStore.getAnnotation();
+          if (annotation) {
+            // Route to image analysis API
+            const res = await fetch("/api/analyze-image", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                image: annotation.imageDataUrl,
+                annotationType: annotation.annotationType,
+                alt: annotation.alt,
+                userMessage: text,
+              }),
+            });
+            const data = await res.json();
+            const answerText = data.content ?? "I couldn't analyze that area. Try highlighting again.";
+
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", content: answerText },
+            ]);
+
+            await speakAnswer(answerText);
+
+            if (agentStateRef.current === "thinking") {
+              setAgentState("idle");
+            }
+            return;
+          } else {
+            // No annotation found
+            const noAnnotationMsg = "I don't see any highlighted area yet. Draw or highlight on an image first, then ask me to explain it.";
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", content: noAnnotationMsg },
+            ]);
+            await speakAnswer(noAnnotationMsg);
+            if (agentStateRef.current === "thinking") {
+              setAgentState("idle");
+            }
+            return;
+          }
+        }
+
+        // Normal chat flow
         const currentMessages = messagesRef.current;
         const res = await fetch("/api/chat", {
           method: "POST",
@@ -279,7 +340,7 @@ export function TutorChat({ context, open, onClose }: TutorChatProps) {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [input, clearTranscript, stopAllAudio, speakAnswer]
+    [input, clearTranscript, stopAllAudio, speakAnswer, annotationStore]
   );
 
   /* ---- mic toggle: ALWAYS interrupts ---- */
@@ -313,21 +374,19 @@ export function TutorChat({ context, open, onClose }: TutorChatProps) {
   /* ================================================================ */
 
   const stateLabel: Record<AgentState, string> = {
-    idle: "Ask me anything",
-    listening: "Listening...",
-    thinking: "Thinking...",
-    speaking: "Speaking...",
+    idle: "Ask Voxi",
+    listening: "Voxi is listening...",
+    thinking: "Voxi is thinking...",
+    speaking: "Voxi is speaking...",
   };
 
   return (
-    <div className="flex h-full flex-col border-t border-border">
-      {/* ── Agent State Header ── */}
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <div className="flex items-center gap-2">
-          {/* Animated orb */}
+    <div className="flex h-full flex-col">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
+        <div className="flex min-w-0 items-center gap-2">
           <span
             className={cn(
-              "relative flex h-2.5 w-2.5 shrink-0 rounded-full",
+              "relative flex h-2 w-2 shrink-0 rounded-full",
               agentState === "idle" && "bg-muted-foreground/40",
               agentState === "listening" && "bg-red-500",
               agentState === "thinking" && "bg-amber-500",
@@ -345,23 +404,24 @@ export function TutorChat({ context, open, onClose }: TutorChatProps) {
               />
             )}
           </span>
-          <span className="text-[11px] font-medium tracking-wide text-muted-foreground">
+          <span className="truncate text-[11px] text-muted-foreground">
             {stateLabel[agentState]}
           </span>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-0.5">
           <button
             type="button"
             onClick={() => setSpeakEnabled(!speakEnabled)}
-            className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
-            title={speakEnabled ? "Mute voice replies" : "Enable voice replies"}
+            className="rounded p-1 text-muted-foreground transition-colors hover:text-foreground"
+            title={speakEnabled ? "Mute" : "Unmute"}
           >
             {speakEnabled ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
           </button>
           <button
             type="button"
             onClick={onClose}
-            className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+            className="rounded p-1 text-muted-foreground transition-colors hover:text-foreground"
+            title="Close"
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -382,8 +442,8 @@ export function TutorChat({ context, open, onClose }: TutorChatProps) {
             </div>
             <p className="text-center text-xs text-muted-foreground leading-relaxed">
               {sttSupported
-                ? "Press the mic below or type to ask\nyour study tutor anything."
-                : "Type a question to ask your\nstudy tutor anything."}
+                ? "Say \"Hey Voxi\" or press the mic.\nDraw on an image, then say \"explain this\"."
+                : "Type a question or \"analyze this\" after\nhighlighting an image area."}
             </p>
           </div>
         )}
@@ -433,7 +493,7 @@ export function TutorChat({ context, open, onClose }: TutorChatProps) {
             className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border px-2 py-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             <Square className="h-2.5 w-2.5" />
-            Stop speaking
+            Stop Voxi
           </button>
         </div>
       )}

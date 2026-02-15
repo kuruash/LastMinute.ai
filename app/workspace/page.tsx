@@ -16,6 +16,11 @@ import type {
   TopicStorylineCard,
 } from "@/types";
 import type { StoryBeat } from "@/app/api/upload/route";
+import {
+  AnnotationStoreContext,
+  useCreateAnnotationStore,
+} from "@/hooks/use-annotation-store";
+import { useWakeWord } from "@/hooks/use-wake-word";
 
 type LoadState = "loading" | "generating" | "ready" | "error";
 const RECENT_SESSIONS_KEY = "lastminute_recent_sessions";
@@ -48,6 +53,43 @@ export default function WorkspacePage() {
   const [storyBeats, setStoryBeats] = useState<StoryBeat[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [recentChats, setRecentChats] = useState<RecentSessionItem[]>([]);
+
+  /* ---- Voxi: annotation store + wake word ---- */
+  const annotationStore = useCreateAnnotationStore();
+  const [voxiOpenTrigger, setVoxiOpenTrigger] = useState(0);
+  const [voxiIsOpen, setVoxiIsOpen] = useState(false);
+
+  /* ---- resizable right panel (Voxi + checklist) ---- */
+  const [rightPanelWidth, setRightPanelWidth] = useState(320);
+  const MIN_RIGHT = 260;
+  const MAX_RIGHT = 560;
+  const handleResize = useCallback((e: React.MouseEvent) => {
+    const startX = e.clientX;
+    const startW = rightPanelWidth;
+    const onMove = (e2: MouseEvent) => {
+      const delta = startX - e2.clientX;
+      setRightPanelWidth((w) => Math.min(MAX_RIGHT, Math.max(MIN_RIGHT, startW + delta)));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [rightPanelWidth]);
+
+  const handleWakeWord = useCallback(() => {
+    setVoxiOpenTrigger((prev) => prev + 1);
+  }, []);
+
+  useWakeWord({
+    onWake: handleWakeWord,
+    disabled: voxiIsOpen,
+  });
 
   const readRecentSessions = useCallback((): RecentSessionItem[] => {
     if (typeof window === "undefined") return [];
@@ -391,68 +433,82 @@ export default function WorkspacePage() {
   const completedCount = checklist.filter((item) => item.done).length;
 
   return (
-    <main className="flex h-screen flex-col bg-background">
-      <header className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
-        <span className="font-mono text-sm font-bold tracking-tighter text-foreground">
-          lastminute<span className="text-muted-foreground">.ai</span>
-        </span>
-        <Link
-          href="/"
-          className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-        >
-          Back
-        </Link>
-      </header>
+    <AnnotationStoreContext.Provider value={annotationStore}>
+      <main className="flex h-screen flex-col bg-background">
+        <header className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
+          <span className="font-mono text-sm font-bold tracking-tighter text-foreground">
+            lastminute<span className="text-muted-foreground">.ai</span>
+          </span>
+          <Link
+            href="/"
+            className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Back
+          </Link>
+        </header>
 
-      <div
-        className={cn(
-          "grid flex-1 overflow-hidden",
-          sidebarCollapsed
-            ? "grid-cols-[64px_1fr_260px]"
-            : "grid-cols-[200px_1fr_260px]"
-        )}
-      >
-        <TopicNav
-          chats={recentChats}
-          selectedId={sessionId}
-          onSelectChat={handleChatSelect}
-          onDeleteChat={handleDeleteChat}
-          onClearHistory={handleClearHistory}
-          onNewChat={handleNewChat}
-          collapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
-        />
-        {sessionId ? (
-          <LessonView
-            activeTopicId={activeTopicId}
-            missionTitle={storyTitle}
-            missionStory={storytelling}
-            topicStorylines={topicStorylines}
-            storyBeats={storyBeats}
-            currentStoryIndex={currentStoryIndex}
-            totalStories={topicStorylines.length}
-            canGoPrevStory={canGoPrevStory}
-            canGoNextStory={canGoNextStory}
-            onPrevStory={handlePrevStory}
-            onNextStory={handleNextStory}
-            loading={false}
-          />
-        ) : (
-          <div className="flex h-full items-center justify-center overflow-y-auto px-6 py-8">
-            <VercelV0Chat />
+        <div className="flex flex-1 overflow-hidden">
+          <div
+            className={cn(
+              "flex shrink-0 flex-col",
+              sidebarCollapsed ? "w-16" : "w-[200px]"
+            )}
+          >
+            <TopicNav
+              chats={recentChats}
+              selectedId={sessionId}
+              onSelectChat={handleChatSelect}
+              onDeleteChat={handleDeleteChat}
+              onClearHistory={handleClearHistory}
+              onNewChat={handleNewChat}
+              collapsed={sidebarCollapsed}
+              onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
+            />
           </div>
-        )}
-        <SupportPanel
-          checklist={checklist}
-          onChecklistToggle={handleChecklistToggle}
-          hints={hints}
-          onRevealHint={handleRevealHint}
-          misconceptions={misconceptions}
-          tutorContext={tutorContext}
-          completedSteps={completedCount}
-          totalSteps={topicStorylines.length}
-        />
-      </div>
-    </main>
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {sessionId ? (
+              <LessonView
+                activeTopicId={activeTopicId}
+                missionTitle={storyTitle}
+                missionStory={storytelling}
+                topicStorylines={topicStorylines}
+                storyBeats={storyBeats}
+                currentStoryIndex={currentStoryIndex}
+                totalStories={topicStorylines.length}
+                canGoPrevStory={canGoPrevStory}
+                canGoNextStory={canGoNextStory}
+                onPrevStory={handlePrevStory}
+                onNextStory={handleNextStory}
+                loading={false}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center overflow-y-auto px-6 py-8">
+                <VercelV0Chat />
+              </div>
+            )}
+          </div>
+          <div
+            role="separator"
+            aria-label="Resize support panel"
+            onMouseDown={handleResize}
+            className="w-1.5 shrink-0 cursor-col-resize border-l border-border bg-border/50 transition-colors hover:bg-primary/20"
+          />
+          <SupportPanel
+            checklist={checklist}
+            onChecklistToggle={handleChecklistToggle}
+            hints={hints}
+            onRevealHint={handleRevealHint}
+            misconceptions={misconceptions}
+            tutorContext={tutorContext}
+            completedSteps={completedCount}
+            totalSteps={topicStorylines.length}
+            voxiOpenTrigger={voxiOpenTrigger}
+            onVoxiOpenChange={setVoxiIsOpen}
+            className="shrink-0"
+            style={{ width: rightPanelWidth, minWidth: rightPanelWidth }}
+          />
+        </div>
+      </main>
+    </AnnotationStoreContext.Provider>
   );
 }

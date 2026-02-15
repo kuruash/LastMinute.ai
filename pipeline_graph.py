@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import hashlib
@@ -12,6 +13,13 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 
 from agents.preprocessing.text_normalizer import normalize_text
+
+_log = logging.getLogger(__name__)
+if not _log.handlers and not logging.root.handlers:
+    _h = logging.StreamHandler()
+    _h.setLevel(logging.WARNING)
+    _log.addHandler(_h)
+    _log.setLevel(logging.WARNING)
 
 try:
     import google.generativeai as genai
@@ -48,6 +56,8 @@ class PipelineState(TypedDict):
     story_beats: list
     llm_used: bool
     llm_status: str
+    lesson_video_prompt: str
+    lesson_video_status: str
 
 
 def _read_env_file_value(key: str) -> str:
@@ -953,11 +963,15 @@ def _generate_image(description: str) -> str | None:
     """Call Gemini image generation API with retry + rate limiting."""
     global _IMG_LAST_CALL
     api_key = _get_api_key()
-    if not api_key or _http is None:
+    if not api_key:
+        _log.warning("Image gen skipped: no GEMINI_API_KEY / GOOGLE_API_KEY")
+        return None
+    if _http is None:
+        _log.warning("Image gen skipped: 'requests' not installed (pip install requests)")
         return None
 
-    # Use LASTMINUTE_IMAGE_MODEL if set, otherwise derive from the text model.
-    # e.g. "gemini-2.5-flash" -> "gemini-2.5-flash-image" (the image-capable variant).
+    # Use LASTMINUTE_IMAGE_MODEL if set (e.g. Imagen 3 / best quality), else derive from LLM model.
+    # Gemini image models: gemini-2.5-flash-image (Nano Banana) or gemini-3-pro-image-preview (Pro).
     image_model = os.getenv("LASTMINUTE_IMAGE_MODEL", "").strip()
     if not image_model:
         base_model = (
@@ -965,13 +979,14 @@ def _generate_image(description: str) -> str | None:
             or _read_env_file_value("LASTMINUTE_LLM_MODEL")
         )
         if not base_model:
+            _log.warning("Image gen skipped: no LASTMINUTE_IMAGE_MODEL or LASTMINUTE_LLM_MODEL")
             return None
-        # If already ends with "-image", use as-is; otherwise append "-image"
         image_model = base_model if base_model.endswith("-image") else f"{base_model}-image"
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"{image_model}:generateContent?key={api_key}"
     )
+    # API requires uppercase: ["TEXT", "IMAGE"] (case-sensitive).
     payload = {
         "contents": [
             {
@@ -988,8 +1003,9 @@ def _generate_image(description: str) -> str | None:
                 ]
             }
         ],
-        "generationConfig": {"responseModalities": ["Text", "Image"]},
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
     }
+    last_error: str | None = None
     for attempt in range(_IMG_MAX_RETRIES):
         with _IMG_LOCK:
             now = time.monotonic()
@@ -1000,14 +1016,23 @@ def _generate_image(description: str) -> str | None:
         try:
             resp = _http.post(url, json=payload, timeout=90)
             if resp.status_code in (429, 500, 502, 503):
-                backoff = _IMG_BASE_BACKOFF * (2 ** attempt)
-                time.sleep(backoff)
+                last_error = f"status={resp.status_code} body={resp.text[:500]}"
+                _log.warning("Image gen attempt %s: %s", attempt + 1, last_error)
+                time.sleep(_IMG_BASE_BACKOFF * (2 ** attempt))
                 continue
             if resp.status_code != 200:
-                continue
+                last_error = f"status={resp.status_code} body={resp.text[:800]}"
+                _log.warning("Image gen failed: %s", last_error)
+                return None
             data = resp.json()
+            # Check for API error in JSON (e.g. blocked, model not found)
+            if "error" in data:
+                last_error = str(data.get("error", data))[:500]
+                _log.warning("Image gen API error: %s", last_error)
+                return None
             candidates = data.get("candidates", [])
             if not candidates:
+                _log.warning("Image gen: no candidates in response")
                 return None
             parts = candidates[0].get("content", {}).get("parts", [])
             for part in parts:
@@ -1015,11 +1040,13 @@ def _generate_image(description: str) -> str | None:
                 if inline and inline.get("data"):
                     mime = inline.get("mimeType", "image/png")
                     return f"data:{mime};base64,{inline['data']}"
+            _log.warning("Image gen: no inlineData in candidate parts")
             return None
-        except Exception:
+        except Exception as e:
+            last_error = str(e)
+            _log.warning("Image gen exception: %s", last_error)
             if attempt < _IMG_MAX_RETRIES - 1:
                 time.sleep(_IMG_BASE_BACKOFF * (2 ** attempt))
-            continue
     return None
 
 
@@ -1148,6 +1175,134 @@ def generate_story_visuals(state: PipelineState) -> PipelineState:
     return {**state, "story_beats": beats}
 
 
+def _build_lesson_video_prompt(state: PipelineState) -> str:
+    """Build an in-depth video prompt covering all 5 topics, slides, and review material."""
+    story = state.get("interactive_story", {}) or {}
+    topic_cards = story.get("topic_storylines", [])
+    if not isinstance(topic_cards, list):
+        topic_cards = []
+    story_beats = state.get("story_beats", []) or []
+    final_storytelling = (state.get("final_storytelling") or "").strip()
+    checklist = state.get("todo_checklist", []) or []
+    mission_title = str(story.get("title", "Mission")).strip() or "Study Mission"
+
+    sections: list[str] = []
+
+    sections.append(
+        "Create an in-depth educational lesson video for a university student reviewing for exams. "
+        "The video must cover ALL topics below in order, with clear sections, on-screen text where key terms appear, "
+        "and as many illustrations and concrete examples as possible. Style: professional but warm, "
+        "like a skilled tutor explaining concepts with diagrams, step-by-step breakdowns, and real-world examples. "
+        "Use visual aids: show formulas when mentioned, sketch concepts (e.g. matrices, flowcharts), "
+        "and include 1–2 worked examples per major concept where relevant. Keep pacing clear: "
+        "introduce each topic, explain the core idea, show an example, then briefly recap before moving on."
+    )
+    sections.append(f"\n\nMISSION / COURSE: {mission_title}\n")
+    if final_storytelling:
+        sections.append(f"Overall narrative context:\n{final_storytelling[:2000]}\n")
+
+    sections.append("\n--- TOPICS TO COVER (in order, cover every one) ---\n")
+    for idx, card in enumerate(topic_cards[:10], 1):
+        title = str(card.get("title", "")).strip() or f"Topic {idx}"
+        topics = card.get("topics", [])
+        subtopics = card.get("subtopics", [])
+        story_text = (card.get("story", "") or "").strip()
+        friend_explainers = card.get("friend_explainers", [])
+        if isinstance(friend_explainers, list):
+            friend_lines = [str(x).strip() for x in friend_explainers if str(x).strip()]
+        else:
+            friend_lines = []
+
+        section = f"\n## Topic {idx}: {title}\n"
+        if topics:
+            section += f"Key themes: {', '.join(str(t) for t in topics[:8])}.\n"
+        if subtopics:
+            section += f"Subtopics to explain: {', '.join(str(s) for s in subtopics[:12])}.\n"
+        if story_text:
+            section += f"Content to cover in this section:\n{story_text[:1200]}\n"
+        if friend_lines:
+            section += "Include these simple explainers (use as on-screen callouts or voiceover):\n"
+            for line in friend_lines[:6]:
+                section += f"  • {line}\n"
+        section += "Include at least one diagram or illustration for this topic and one short example.\n"
+        sections.append(section)
+
+    sections.append("\n--- REVIEW CHECKLIST (mention or show in recap) ---\n")
+    for item in (checklist or [])[:20]:
+        if isinstance(item, dict) and item.get("label"):
+            sections.append(f"  • {item.get('label', '')}\n")
+        elif isinstance(item, str) and item.strip():
+            sections.append(f"  • {item.strip()}\n")
+
+    sections.append("\n--- STORY BEATS / VISUALS (align with topics above) ---\n")
+    for beat in story_beats[:15]:
+        label = str(beat.get("label", "")).strip()
+        narrative = (beat.get("narrative") or "").strip()
+        steps = beat.get("image_steps", [])
+        if label:
+            sections.append(f"\nBeat: {label}\n")
+        if narrative:
+            sections.append(f"  Narrative: {narrative[:400]}\n")
+        for s in steps[:2]:
+            sl = str(s.get("step_label", "")).strip()
+            if sl:
+                sections.append(f"  Visual: {sl}\n")
+
+    sections.append(
+        "\n--- VIDEO PRODUCTION NOTES ---\n"
+        "Length: aim for a comprehensive lesson (e.g. 4 minutes equivalent in content density). "
+        "Include an intro (mission title + what we will cover), a clear section per topic, "
+        "on-screen text for definitions and formulas, and a short recap at the end. "
+        "Use as many illustrations and examples as possible; every major concept should have "
+        "a visual or worked example. Tone: encouraging and precise, suitable for exam revision."
+    )
+    return "".join(sections)
+
+
+@traceable(run_type="chain", name="generate_lesson_video")
+def generate_lesson_video(state: PipelineState) -> PipelineState:
+    """After all 5 topics: build a detailed Veo 3.1 (or best) video prompt for an in-depth lesson video."""
+    prompt = _build_lesson_video_prompt(state)
+    status = "prompt_ready"
+    api_key = _get_api_key()
+    video_model = (
+        os.getenv("LASTMINUTE_VIDEO_MODEL", "").strip()
+        or _read_env_file_value("LASTMINUTE_VIDEO_MODEL")
+        or "veo-3.1-generate-preview"
+    )
+    if not api_key:
+        _log.warning("Video gen skipped: no GEMINI_API_KEY / GOOGLE_API_KEY")
+        status = "video_skipped_no_api_key"
+    elif not prompt:
+        status = "video_skipped_no_prompt"
+    else:
+        try:
+            if _http is None:
+                _log.warning("Video gen skipped: 'requests' not installed")
+                status = "video_skipped_no_http"
+            else:
+                video_url = (
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{video_model}:generateVideos?key={api_key}"
+                )
+                video_body = {"prompt": prompt[:8000], "aspectRatio": "16:9"}
+                r2 = _http.post(video_url, json=video_body, timeout=180)
+                if r2.status_code == 200:
+                    status = "video_submitted"
+                else:
+                    err_body = (r2.text or "")[:600]
+                    _log.warning(
+                        "Video gen REST failed: status=%s body=%s",
+                        r2.status_code,
+                        err_body,
+                    )
+                    status = f"video_api_error: {r2.status_code} {err_body[:150]}"
+        except Exception as e:
+            _log.warning("Video gen exception: %s", e, exc_info=True)
+            status = f"video_api_unavailable: {str(e)[:200]}"
+    return {**state, "lesson_video_prompt": prompt, "lesson_video_status": status}
+
+
 def build_graph():
     graph = StateGraph(PipelineState)
     graph.add_node("store_raw_files", store_raw_files)
@@ -1160,6 +1315,7 @@ def build_graph():
     graph.add_node("select_scenario_seed", select_scenario_seed)
     graph.add_node("generate_learning_event", generate_learning_event)
     graph.add_node("generate_story_visuals", generate_story_visuals)
+    graph.add_node("generate_lesson_video", generate_lesson_video)
 
     graph.set_entry_point("store_raw_files")
     graph.add_edge("store_raw_files", "extract_text")
@@ -1171,7 +1327,8 @@ def build_graph():
     graph.add_edge("estimate_priority", "select_scenario_seed")
     graph.add_edge("select_scenario_seed", "generate_learning_event")
     graph.add_edge("generate_learning_event", "generate_story_visuals")
-    graph.add_edge("generate_story_visuals", END)
+    graph.add_edge("generate_story_visuals", "generate_lesson_video")
+    graph.add_edge("generate_lesson_video", END)
     return graph.compile()
 
 
@@ -1196,6 +1353,8 @@ def run_pipeline(raw_files: list, extracted_text: str = "") -> PipelineState:
         "story_beats": [],
         "llm_used": False,
         "llm_status": "",
+        "lesson_video_prompt": "",
+        "lesson_video_status": "",
     }
     return PIPELINE_GRAPH.invoke(initial_state)
 
@@ -1237,6 +1396,8 @@ def run_pipeline_with_trace(
         "llm_status": "",
     }
 
+    initial_state["lesson_video_prompt"] = ""
+    initial_state["lesson_video_status"] = ""
     current_state: dict[str, Any] = dict(initial_state)
     trace: list[dict[str, Any]] = []
 

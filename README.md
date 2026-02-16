@@ -2,35 +2,73 @@
 
 **Interactive, story-driven exam preparation engine.**
 
-Students upload their study materials, pick a difficulty, and learn through missions, scenarios, and embedded quizzes — not passive summaries.
+Students upload study materials, pick a difficulty, and learn through missions, scenarios, and embedded visuals — not passive summaries.
 
 ---
 
 ## Quick start
 
 ```bash
-# install dependencies
 npm install
-
-# run the dev server
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
 
-**Environment (optional for AI pipeline):**  
-Copy `.env.example` to `.env` and set `GEMINI_API_KEY` (from [Google AI Studio](https://aistudio.google.com/apikey)) so uploads use the LLM pipeline for concepts and story generation. Without it, uploads still work but use fallback content.
+**Environment:** Copy `.env.example` to `.env` and set:
 
-**Python (for upload parsing):**  
-`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
+- `GEMINI_API_KEY` — from [Google AI Studio](https://aistudio.google.com/apikey); required for the LLM pipeline (concepts, story, image generation).
+- `LASTMINUTE_LLM_MODEL` — optional; defaults to the model used for both text and image generation (e.g. `gemini-2.5-flash`).
 
-Other commands:
+Without `GEMINI_API_KEY`, uploads still work but use fallback content and no generated images.
 
-| Command           | What it does              |
-| ----------------- | ------------------------- |
-| `npm run build`   | Production build          |
-| `npm run start`   | Serve production build    |
-| `npm run lint`    | Run ESLint                |
+**Python (for upload pipeline):** The upload API spawns a Python process that runs the LangGraph pipeline. Use a venv and install dependencies:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+Or with uv: `uv sync` (see `pyproject.toml`).
+
+**Commands**
+
+| Command           | Description           |
+| ----------------- | --------------------- |
+| `npm run build`   | Production build      |
+| `npm run start`   | Serve production      |
+| `npm run lint`    | Run ESLint            |
+
+---
+
+## LangGraph pipeline
+
+The learning pipeline is implemented as a **LangGraph** agent in `pipeline_graph.py`.
+
+- **State:** A single `PipelineState` TypedDict holds raw files, extracted/cleaned text, chunks, concepts, priority concepts, scenario seed, learning event, checklist, interactive story, final narrative, story beats (with optional per-step images), and LLM status.
+- **Graph:** `StateGraph(PipelineState)` with a linear flow of 10 nodes:
+  1. `store_raw_files` — Persist file references.
+  2. `extract_text` — Use `agents.loaders` (PDF, PPT, text, image/OCR) to get raw text.
+  3. `clean_text` — Normalize and clean.
+  4. `chunk_text` — Split for processing.
+  5. `concept_extraction` — LLM extracts concepts from chunks.
+  6. `normalize_concepts` — Dedupe and normalize.
+  7. `estimate_priority` — Score and rank concepts.
+  8. `select_scenario_seed` — Pick scenario focus.
+  9. `generate_learning_event` — LLM produces mission title, format, tasks, and narrative.
+  10. `generate_story_visuals` — LLM breaks narrative into beats; each beat has up to 3 image steps, each step optionally filled with a generated diagram (Gemini image API, rate-limited).
+- **Execution:** The compiled graph is invoked with `PIPELINE_GRAPH.invoke(initial_state)`. For debugging, `run_pipeline_with_trace()` uses `PIPELINE_GRAPH.stream(..., stream_mode="updates")` and returns state plus a trace of node updates.
+- **Integration:** The Next.js upload API (`app/api/upload/route.ts`) writes the uploaded file to a temp path, spawns Python, and runs either `run_pipeline` or `run_pipeline_with_trace` (when `LASTMINUTE_DEBUG_PIPELINE` is set). The pipeline output is returned as JSON (story_beats, concepts, checklist, etc.) and the front end stores it (e.g. in sessionStorage) and can redirect to the results page.
+
+---
+
+## Features
+
+- **File upload:** PDF, PPT, text, images (OCR). Uploads are sent to `/api/upload`, which runs the Python pipeline and returns learning content.
+- **LLM pipeline:** Concept extraction, priority ranking, scenario seed, learning event (mission/tasks), and a narrative broken into story beats. Optional per-beat diagram generation via Gemini (model from `LASTMINUTE_LLM_MODEL`).
+- **Results page:** `/results` shows the generated story, beats, and step-by-step images (when image generation is enabled and succeeds).
+- **Sidebar:** App-wide sidebar (chat history) lists past sessions from sessionStorage and links to Overview, New upload, Latest results, with optional search.
+- **Workspace:** `/workspace` provides a 3-panel learning UI (topic nav, mission canvas, support panel) for future mission/scenario gameplay.
 
 ---
 
@@ -38,112 +76,78 @@ Other commands:
 
 ```
 LastMinute.ai/
-├── app/                    ← Next.js App Router (pages + API routes)
+├── app/
 │   ├── api/
-│   │   ├── chat/route.ts   — POST /api/chat  (tutor conversation)
-│   │   └── upload/route.ts — POST /api/upload (file ingestion)
-│   ├── globals.css         — Tailwind base + CSS theme variables
-│   ├── layout.tsx          — Root layout (font, metadata)
-│   ├── page.tsx            — Home page (upload / start)
-│   └── workspace/page.tsx  — Main learning workspace (3-panel screen)
+│   │   ├── chat/route.ts      — POST /api/chat (tutor; stub)
+│   │   └── upload/route.ts     — POST /api/upload (runs Python pipeline)
+│   ├── globals.css
+│   ├── layout.tsx              — Root layout + SidebarLayout
+│   ├── page.tsx                — Home (upload / chat UI)
+│   ├── results/page.tsx        — Learning results (story, beats, images)
+│   └── workspace/page.tsx      — 3-panel learning workspace
 │
-├── agents/                 ← AI agent modules (backend logic)
-│   ├── document.ts         — Parse uploads, extract concepts
-│   ├── curriculum.ts       — Build prioritized learning paths
-│   ├── story.ts            — Generate interactive scenarios
-│   ├── media.ts            — Produce diagrams, GIFs, visuals
-│   ├── tutor.ts            — Conversational explanations
-│   └── evaluation.ts       — Score responses, adapt difficulty
+├── components/
+│   ├── sidebar-layout.tsx      — Wraps app with sidebar; reads chat history from sessionStorage
+│   ├── ui/
+│   │   ├── sidebar-with-submenu.tsx
+│   │   ├── v0-ai-chat.tsx      — Upload + chat UI
+│   │   └── textarea.tsx
+│   └── workspace/
+│       ├── topic-nav.tsx
+│       ├── mission-canvas.tsx
+│       └── support-panel.tsx
 │
-├── components/             ← React UI components
-│   ├── ui/                 — Primitive/shadcn components
-│   │   ├── v0-ai-chat.tsx  — Main chat interface
-│   │   └── textarea.tsx    — Auto-resize textarea
-│   └── workspace/          — Learning workspace (Screen B)
-│       ├── topic-nav.tsx   — Left: topics, progress, weak tags
-│       ├── mission-canvas.tsx — Center: mission card, widget, answer
-│       └── support-panel.tsx  — Right: checklist, tutor, hints, log
+├── agents/
+│   ├── loaders/                — Python: PDF, PPT, text, image (OCR) loaders
+│   ├── preprocessing/         — Python: text normalization
+│   ├── document.ts            — TypeScript stubs
+│   ├── curriculum.ts
+│   ├── story.ts
+│   ├── media.ts
+│   ├── tutor.ts
+│   └── evaluation.ts
 │
-├── lib/                    ← Shared utilities
-│   └── utils.ts            — cn() class merging helper
-│
-├── types/                  ← Shared TypeScript types
-│   └── index.ts            — Domain types (Concept, Course, Scenario, etc.)
-│
-├── PROJECT.md              — Full product concept / pitch document
+├── lib/
+│   └── utils.ts
+├── types/
+│   └── index.ts
+├── pipeline_graph.py           — LangGraph pipeline (state, 10 nodes, invoke/stream)
+├── pyproject.toml / requirements.txt
 ├── package.json
 ├── tailwind.config.ts
 ├── tsconfig.json
 └── next.config.js
 ```
 
-### Where things live
-
-| You want to…                        | Look in               |
-| ----------------------------------- | ---------------------- |
-| Change a page or add a new route    | `app/`                 |
-| Edit the 3-panel learning workspace | `app/workspace/`, `components/workspace/` |
-| Add or edit an API endpoint         | `app/api/`             |
-| Work on AI agent logic              | `agents/`              |
-| Build or modify UI components       | `components/`          |
-| Add shared helper functions         | `lib/`                 |
-| Add or update TypeScript interfaces | `types/`               |
-| Understand the product vision       | `PROJECT.md`           |
-
-> Each folder has its own `README.md` with more detail.
-
 ---
 
 ## Tech stack
 
-| Layer     | Tech                            |
-| --------- | ------------------------------- |
-| Framework | Next.js 13 (App Router)         |
-| Language  | TypeScript                      |
-| Styling   | Tailwind CSS + shadcn variables |
-| Icons     | lucide-react                    |
-| Font      | Inter (via next/font/google)    |
-
----
-
-## How it works (high level)
-
-```
-User uploads materials
-        ↓
-  Document Agent      → extracts concepts & priorities
-        ↓
-  Curriculum Agent    → builds a learning path (easy / medium / hard)
-        ↓
-  Story Engine Agent  → generates interactive scenarios
-        ↓
-  User plays scenario → makes decisions, answers questions
-        ↓
-  Evaluation Agent    → scores, adapts difficulty, decides next step
-        ↕                       ↕
-  Media Agent               Tutor Agent
-  (visuals on demand)       (help on demand)
-```
+| Layer     | Tech                         |
+| --------- | ---------------------------- |
+| Framework | Next.js 13 (App Router)      |
+| Language  | TypeScript (app); Python (pipeline) |
+| Styling   | Tailwind CSS, shadcn-style variables |
+| Icons     | lucide-react                 |
+| Pipeline  | LangGraph (StateGraph), Gemini API |
 
 ---
 
 ## Status
 
-- [x] Project scaffold (Next.js + Tailwind + TypeScript)
-- [x] Chat UI component
-- [x] Agent skeletons with typed interfaces
-- [x] API route stubs (`/api/chat`, `/api/upload`)
-- [x] Shared domain types
-- [ ] LLM integration for agents
-- [ ] File upload + document parsing
-- [ ] Mission/scenario gameplay loop
-- [ ] Difficulty adaptation
+- [x] Project scaffold (Next.js, Tailwind, TypeScript)
+- [x] Chat/upload UI and sidebar with chat history
+- [x] LangGraph pipeline (extract, concepts, story, beats, optional images)
+- [x] Upload API calling Python pipeline; results page with story and images
+- [x] Workspace 3-panel UI (topic nav, mission canvas, support panel)
+- [ ] Tutor agent wired to `/api/chat`
+- [ ] Mission/scenario gameplay loop and difficulty adaptation
 - [ ] Voice tutor mode
 
 ---
 
 ## Contributing
 
-1. Create a branch off `main`
-2. Make your changes
-3. Open a PR with a description of what changed and why
+1. Branch off `main`.
+2. Make changes.
+3. Open a PR with a short description of what changed and why.
